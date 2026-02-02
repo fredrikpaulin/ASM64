@@ -1,0 +1,13 @@
+# Build directory
+build/
+
+# Editor files
+*.swp
+*~
+.DS_Store
+
+# Debug files
+*.dSYM/
+
+project/
+input/
