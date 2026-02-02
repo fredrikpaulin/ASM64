@@ -94,10 +94,32 @@ lda #'A'        ; Character
 ### Labels
 
 ```asm
-global_label:       ; Global label
-.local_label:       ; Local label (scoped to zone)
+global_label:       ; Global label (starts new zone)
+.local_label:       ; Local label (scoped to current zone)
 +                   ; Anonymous forward reference
 -                   ; Anonymous backward reference
+```
+
+Local labels are scoped to zones. Each global label automatically starts a new zone:
+
+```asm
+func1:
+    beq .done       ; References func1's .done
+.done:
+    rts
+
+func2:
+    beq .done       ; References func2's .done (different from above)
+.done:
+    rts
+```
+
+You can also use `!zone` to create explicit zones:
+
+```asm
+!zone myzone
+.local:
+    jmp .local      ; References myzone's .local
 ```
 
 ### Addressing Modes
@@ -213,6 +235,13 @@ zp_routine:
 !align 256          ; Align to 256-byte boundary
 !align 16, $EA      ; Align with NOP fill
 !skip 100           ; Reserve 100 bytes
+```
+
+#### Zones
+
+```asm
+!zone name          ; Start a named zone for local labels
+!zn name            ; Alias for !zone
 ```
 
 ### Expressions

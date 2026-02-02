@@ -1,0 +1,54 @@
+; ASM64 Listing File
+; Generated from assembled source
+;
+; Address  Bytes         Source
+; -------  ----------    ------
+
+                    ; Test local labels with zone scoping
+                    ; Each global label starts a new zone
+                    *= $1000
+                    ; First function - insert_char zone
+1000                insert_char:
+1000  A9 01         lda #$01
+1002  F0 02         beq .done
+1004  90 01         bcc .error
+1006                .done:
+1006  60            rts
+1007                .error:
+1007  38            sec
+1008  60            rts
+                    ; Second function - delete_char zone
+                    ; Should have its own .done and .error labels
+1009                delete_char:
+1009  A9 02         lda #$02
+100B  F0 00         beq .done
+100D                .done:
+100D  60            rts
+                    ; Test explicit !zone directive
+                    !zone myzone
+100E                .local1:
+100E  EA            nop
+100F  4C 0E 10      jmp .local1
+                    ; Another explicit zone
+                    !zone otherzone
+1012                .local1:            ; Different from myzone's .local1
+1012  EA            nop
+1013  4C 12 10      jmp .local1
+                    ; Back to implicit zone from global label
+1016                third_func:
+1016                .loop:
+1016  CA            dex
+1017  D0 FD         bne .loop
+1019  60            rts
+
+; Symbol Table
+; ------------
+al C:1000 .insert_char
+al C:1006 .insert_char.done
+al C:1007 .insert_char.error
+al C:1009 .delete_char
+al C:100D .delete_char.done
+al C:100E .myzone.local1
+al C:1012 .otherzone.local1
+al C:1016 .third_func
+al C:1016 .third_func.loop

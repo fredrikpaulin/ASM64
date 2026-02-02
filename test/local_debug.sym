@@ -1,0 +1,3 @@
+al C:1000 .insert_char
+al C:1001 .insert_char.done
+al C:1002 .insert_char.error

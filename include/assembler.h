@@ -149,6 +149,7 @@ typedef struct {
 
     /* Scope tracking for local labels */
     Scope *scope;
+    char *current_zone;             /* Name of current zone for local labels */
 
     /* Anonymous label tracking */
     AnonLabels *anon_labels;

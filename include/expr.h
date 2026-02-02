@@ -159,14 +159,16 @@ const char *expr_parser_error(ExprParser *parser);
 /*
  * Evaluate an expression.
  * symbols: symbol table for lookups (can be NULL for constant expressions)
+ * anon: anonymous label tracker
  * pc: current program counter value (for * references)
  * pass: assembly pass (1 or 2) - affects undefined symbol handling
+ * current_zone: name of current zone for local label mangling (can be NULL)
  *
  * Returns result with value and defined flag.
  * On pass 1, undefined symbols result in defined=0 but no error.
  * On pass 2, undefined symbols are an error.
  */
-ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass);
+ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass, const char *current_zone);
 
 /*
  * Evaluate an expression and return just the value.

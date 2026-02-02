@@ -34,7 +34,7 @@ static ExprResult parse_eval(const char *text, SymbolTable *symbols, uint16_t pc
     Expr *expr = expr_parse(&parser);
     ExprResult result = { 0, 0, 0 };
     if (expr) {
-        result = expr_eval(expr, symbols, NULL, pc, 2);
+        result = expr_eval(expr, symbols, NULL, pc, 2, NULL);
         expr_free(expr);
     }
     return result;
@@ -318,7 +318,7 @@ TEST(undefined_symbol_pass1) {
     lexer_init(&lexer, "UNDEFINED", "test");
     expr_parser_init(&parser, &lexer);
     Expr *expr = expr_parse(&parser);
-    ExprResult result = expr_eval(expr, NULL, NULL, 0, 1);  /* Pass 1 */
+    ExprResult result = expr_eval(expr, NULL, NULL, 0, 1, NULL);  /* Pass 1 */
     expr_free(expr);
     return result.defined == 0;  /* Should be marked undefined */
 }
@@ -332,7 +332,7 @@ TEST(undefined_in_expr_pass1) {
     lexer_init(&lexer, "KNOWN + UNKNOWN", "test");
     expr_parser_init(&parser, &lexer);
     Expr *expr = expr_parse(&parser);
-    ExprResult result = expr_eval(expr, table, NULL, 0, 1);
+    ExprResult result = expr_eval(expr, table, NULL, 0, 1, NULL);
     expr_free(expr);
     symbol_table_free(table);
 

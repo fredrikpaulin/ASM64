@@ -511,7 +511,35 @@ Expr *expr_parse_primary(ExprParser *parser) {
 
 /* ========== Expression Evaluation ========== */
 
-ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass) {
+/* Helper to mangle local label name with zone */
+static char *mangle_local_name(const char *name, const char *zone) {
+    if (!name || name[0] != '.') return NULL;
+
+    const char *local_part = name + 1;  /* Skip the leading . */
+
+    if (!zone || zone[0] == '\0') {
+        /* No zone - use _global prefix */
+        size_t len = strlen(local_part) + 10;
+        char *mangled = malloc(len);
+        if (mangled) {
+            snprintf(mangled, len, "_global.%s", local_part);
+        }
+        return mangled;
+    }
+
+    /* Build mangled name: zone.local_part */
+    size_t zone_len = strlen(zone);
+    size_t local_len = strlen(local_part);
+    size_t total_len = zone_len + 1 + local_len + 1;
+
+    char *mangled = malloc(total_len);
+    if (mangled) {
+        snprintf(mangled, total_len, "%s.%s", zone, local_part);
+    }
+    return mangled;
+}
+
+ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass, const char *current_zone) {
     ExprResult result = { 0, 1, 0 };  /* Default: value=0, defined=true */
 
     if (!expr) {
@@ -532,6 +560,7 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
 
         case EXPR_SYMBOL: {
             const char *name = expr->data.symbol;
+            char *mangled_name = NULL;
 
             /* Check for anonymous forward label special names */
             if (strncmp(name, "__anon_fwd_", 11) == 0) {
@@ -579,6 +608,14 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
                 break;
             }
 
+            /* Handle local labels - mangle with current zone */
+            if (name[0] == '.') {
+                mangled_name = mangle_local_name(name, current_zone);
+                if (mangled_name) {
+                    name = mangled_name;
+                }
+            }
+
             Symbol *sym = symbol_lookup(symbols, name);
             if (!sym || !(sym->flags & SYM_DEFINED)) {
                 result.defined = 0;
@@ -589,11 +626,13 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
                 result.is_zeropage = (sym->flags & SYM_ZEROPAGE) ||
                                      (result.value >= 0 && result.value <= 0xFF);
             }
+
+            free(mangled_name);
             break;
         }
 
         case EXPR_UNARY: {
-            ExprResult operand = expr_eval(expr->data.unary.operand, symbols, anon, pc, pass);
+            ExprResult operand = expr_eval(expr->data.unary.operand, symbols, anon, pc, pass, current_zone);
             result.defined = operand.defined;
 
             switch (expr->data.unary.op) {
@@ -619,8 +658,8 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
         }
 
         case EXPR_BINARY: {
-            ExprResult left = expr_eval(expr->data.binary.left, symbols, anon, pc, pass);
-            ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass);
+            ExprResult left = expr_eval(expr->data.binary.left, symbols, anon, pc, pass, current_zone);
+            ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass, current_zone);
             result.defined = left.defined && right.defined;
 
             switch (expr->data.binary.op) {
@@ -695,7 +734,7 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
 }
 
 int32_t expr_eval_value(Expr *expr, SymbolTable *symbols, uint16_t pc) {
-    ExprResult result = expr_eval(expr, symbols, NULL, pc, 2);
+    ExprResult result = expr_eval(expr, symbols, NULL, pc, 2, NULL);
     return result.value;
 }
 

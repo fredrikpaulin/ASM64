@@ -367,7 +367,7 @@ static Statement *parse_instruction(Parser *parser, const char *mnemonic, int li
     int32_t value = 0;
     int value_known = 0;
     if (operand.expr) {
-        ExprResult result = expr_eval(operand.expr, parser->symbols, NULL, parser->pc, parser->pass);
+        ExprResult result = expr_eval(operand.expr, parser->symbols, NULL, parser->pc, parser->pass, NULL);
         value = result.value;
         value_known = result.defined;
     }

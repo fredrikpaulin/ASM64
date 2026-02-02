@@ -78,6 +78,9 @@ Assembler *assembler_create(void) {
     /* Default CPU type */
     as->cpu_type = CPU_6510;
 
+    /* Initialize zone for local labels */
+    as->current_zone = NULL;
+
     return as;
 }
 
@@ -86,6 +89,7 @@ void assembler_free(Assembler *as) {
 
     free(as->memory);
     free(as->written);
+    free(as->current_zone);
     symbol_table_free(as->symbols);
     scope_free(as->scope);
     anon_free(as->anon_labels);
@@ -128,6 +132,10 @@ void assembler_reset(Assembler *as) {
 
     scope_free(as->scope);
     as->scope = scope_create();
+
+    /* Reset current zone for local labels */
+    free(as->current_zone);
+    as->current_zone = NULL;
 
     anon_clear(as->anon_labels);
 
@@ -357,8 +365,25 @@ static void define_label(Assembler *as, LabelInfo *label) {
     } else if (label->is_anon_back) {
         anon_define_backward(as->anon_labels, as->pc, as->current_file, as->current_line);
     } else if (label->is_local) {
-        /* Mangle local label name with current scope */
-        char *mangled = scope_mangle_local(as->scope, label->name);
+        /* Mangle local label name with current zone */
+        const char *local_part = label->name;
+        if (local_part[0] == '.') local_part++;
+
+        char *mangled;
+        if (as->current_zone) {
+            size_t len = strlen(as->current_zone) + 1 + strlen(local_part) + 1;
+            mangled = malloc(len);
+            if (mangled) {
+                snprintf(mangled, len, "%s.%s", as->current_zone, local_part);
+            }
+        } else {
+            size_t len = strlen(local_part) + 10;
+            mangled = malloc(len);
+            if (mangled) {
+                snprintf(mangled, len, "_global.%s", local_part);
+            }
+        }
+
         if (mangled) {
             symbol_define(as->symbols, mangled, as->pc, flags,
                          as->current_file, as->current_line);
@@ -368,8 +393,10 @@ static void define_label(Assembler *as, LabelInfo *label) {
         /* Global label - also starts a new zone for local labels */
         symbol_define(as->symbols, label->name, as->pc, flags,
                      as->current_file, as->current_line);
-        /* Push new scope for local labels */
-        as->scope = scope_push(as->scope, label->name);
+
+        /* Update current zone to this label's name */
+        free(as->current_zone);
+        as->current_zone = strdup(label->name);
     }
 }
 
@@ -393,7 +420,7 @@ int assembler_assemble_instruction(Assembler *as, Statement *stmt) {
     int value_defined = 1;
 
     if (info->operand) {
-        ExprResult result = expr_eval(info->operand, as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(info->operand, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         operand_value = result.value;
         value_defined = result.defined;
 
@@ -494,7 +521,7 @@ static int assemble_byte_directive(Assembler *as, Statement *stmt) {
     DirectiveInfo *dir = &stmt->data.directive;
 
     for (int i = 0; i < dir->arg_count; i++) {
-        ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (as->pass == 2 && !result.defined) {
             assembler_error(as, "undefined symbol in !byte directive");
             return -1;
@@ -517,7 +544,7 @@ static int assemble_word_directive(Assembler *as, Statement *stmt) {
     DirectiveInfo *dir = &stmt->data.directive;
 
     for (int i = 0; i < dir->arg_count; i++) {
-        ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (as->pass == 2 && !result.defined) {
             assembler_error(as, "undefined symbol in !word directive");
             return -1;
@@ -559,7 +586,7 @@ static int assemble_fill_directive(Assembler *as, Statement *stmt) {
         return -1;
     }
 
-    ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+    ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
     if (!count_result.defined) {
         assembler_error(as, "!fill count must be constant");
         return -1;
@@ -573,7 +600,7 @@ static int assemble_fill_directive(Assembler *as, Statement *stmt) {
 
     uint8_t fill_value = 0;
     if (dir->arg_count >= 2) {
-        ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (as->pass == 2 && !value_result.defined) {
             assembler_error(as, "!fill value must be defined");
             return -1;
@@ -600,7 +627,7 @@ static int assemble_org_directive(Assembler *as, Statement *stmt) {
         return -1;
     }
 
-    ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+    ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
     if (!result.defined) {
         assembler_error(as, "org address must be constant");
         return -1;
@@ -812,7 +839,7 @@ static int assemble_skip_directive(Assembler *as, Statement *stmt) {
         return -1;
     }
 
-    ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+    ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
     if (!count_result.defined) {
         assembler_error(as, "!skip count must be constant");
         return -1;
@@ -838,7 +865,7 @@ static int assemble_align_directive(Assembler *as, Statement *stmt) {
         return -1;
     }
 
-    ExprResult align_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+    ExprResult align_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
     if (!align_result.defined) {
         assembler_error(as, "!align value must be constant");
         return -1;
@@ -862,7 +889,7 @@ static int assemble_align_directive(Assembler *as, Statement *stmt) {
     /* Get fill value */
     uint8_t fill_value = 0;
     if (dir->arg_count >= 2) {
-        ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (as->pass == 2 && !value_result.defined) {
             assembler_error(as, "!align fill value must be defined");
             return -1;
@@ -893,7 +920,7 @@ static int assemble_binary_directive(Assembler *as, Statement *stmt) {
     int length = 0;
 
     if (dir->arg_count >= 1) {
-        ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!r.defined) {
             assembler_error(as, "!binary size must be constant");
             return -1;
@@ -902,7 +929,7 @@ static int assemble_binary_directive(Assembler *as, Statement *stmt) {
     }
 
     if (dir->arg_count >= 2) {
-        ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!r.defined) {
             assembler_error(as, "!binary offset must be constant");
             return -1;
@@ -938,7 +965,7 @@ static int assemble_basic_directive(Assembler *as, Statement *stmt) {
 
     /* Parse optional arguments */
     if (dir->arg_count >= 1) {
-        ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!r.defined && as->pass == 2) {
             assembler_error(as, "!basic line number must be constant");
             return -1;
@@ -947,7 +974,7 @@ static int assemble_basic_directive(Assembler *as, Statement *stmt) {
     }
 
     if (dir->arg_count >= 2) {
-        ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!r.defined && as->pass == 2) {
             assembler_error(as, "!basic SYS address must be constant");
             return -1;
@@ -1099,7 +1126,7 @@ int assembler_assemble_directive(Assembler *as, Statement *stmt) {
             assembler_error(as, "!pseudopc requires an address");
             return -1;
         }
-        ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!result.defined) {
             assembler_error(as, "!pseudopc address must be a defined value");
             return -1;
@@ -1139,6 +1166,35 @@ int assembler_assemble_directive(Assembler *as, Statement *stmt) {
         return assembler_set_cpu(as, cpu_name);
     }
 
+    /* Zone directive - sets current zone for local labels */
+    if (strcmp(name, "zone") == 0 || strcmp(name, "zn") == 0) {
+        const char *zone_name = NULL;
+
+        /* Check for string argument first */
+        if (dir->string_arg) {
+            zone_name = dir->string_arg;
+        } else if (dir->arg_count >= 1 && dir->args[0]) {
+            /* Try to get from symbol expression */
+            Expr *arg = dir->args[0];
+            if (arg->type == EXPR_SYMBOL) {
+                zone_name = arg->data.symbol;
+            }
+        }
+
+        /* Update current zone */
+        free(as->current_zone);
+        if (zone_name && zone_name[0] != '\0') {
+            as->current_zone = strdup(zone_name);
+        } else {
+            /* Anonymous zone - use unique name */
+            static int anon_zone_counter = 0;
+            char buf[32];
+            snprintf(buf, sizeof(buf), "_zone_%d", ++anon_zone_counter);
+            as->current_zone = strdup(buf);
+        }
+        return 0;
+    }
+
     /* Error/warning messages */
     if (strcmp(name, "error") == 0) {
         /* Get message from string argument */
@@ -1169,7 +1225,7 @@ int assembler_assemble_directive(Assembler *as, Statement *stmt) {
 static int assemble_assignment(Assembler *as, Statement *stmt) {
     AssignmentInfo *assign = &stmt->data.assignment;
 
-    ExprResult result = expr_eval(assign->value, as->symbols, as->anon_labels, as->pc, as->pass);
+    ExprResult result = expr_eval(assign->value, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
 
     /* Determine flags for the symbol definition:
      * - In pass 1 outside loops: SYM_CONSTANT (traditional behavior)
@@ -1197,8 +1253,18 @@ int assembler_assemble_statement(Assembler *as, Statement *stmt) {
     as->current_line = stmt->line;
 
     /* Handle label first */
-    if (stmt->label && as->pass == 1) {
-        define_label(as, stmt->label);
+    if (stmt->label) {
+        if (as->pass == 1) {
+            /* Define symbols in pass 1 */
+            define_label(as, stmt->label);
+        } else {
+            /* In pass 2, still need to track zone for local label resolution */
+            if (!stmt->label->is_local && !stmt->label->is_anon_fwd && !stmt->label->is_anon_back) {
+                /* Global label - update current zone */
+                free(as->current_zone);
+                as->current_zone = strdup(stmt->label->name);
+            }
+        }
     }
 
     /* Process statement based on type */
@@ -1485,8 +1551,8 @@ static int process_loop_directive(Assembler *as, Statement *stmt, Lexer *lexer, 
         }
 
         /* Evaluate start and end */
-        ExprResult start_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass);
-        ExprResult end_result = expr_eval(dir->args[2], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult start_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        ExprResult end_result = expr_eval(dir->args[2], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
 
         if (!start_result.defined || !end_result.defined) {
             assembler_error(as, "!for start and end must be defined values");
@@ -1542,7 +1608,7 @@ static int process_conditional_directive(Assembler *as, Statement *stmt) {
             assembler_error(as, "!if requires a condition expression");
             return -1;
         }
-        ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         /* In pass 1, treat undefined as false for forward refs */
         int condition = result.defined ? result.value : 0;
         return assembler_cond_if(as, condition);
@@ -1804,6 +1870,10 @@ int assembler_pass2(Assembler *as) {
     as->pc = as->org;
     as->real_pc = as->org;
     as->in_pseudopc = 0;
+
+    /* Reset zone tracking for pass 2 */
+    free(as->current_zone);
+    as->current_zone = NULL;
 
     /* Reset anonymous label tracking for pass 2 */
     anon_reset_pass(as->anon_labels);
@@ -2988,7 +3058,7 @@ int assembler_loop_while(Assembler *as, Expr *condition, const char *body) {
 
     while (iterations < max_iterations) {
         /* Evaluate condition */
-        ExprResult result = expr_eval(entry->condition, as->symbols, as->anon_labels, as->pc, as->pass);
+        ExprResult result = expr_eval(entry->condition, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         if (!result.defined) {
             assembler_error(as, "undefined symbol in !while condition");
             break;

@@ -1,0 +1,9 @@
+al C:1000 .insert_char
+al C:1006 .insert_char.done
+al C:1007 .insert_char.error
+al C:1009 .delete_char
+al C:100D .delete_char.done
+al C:100E .myzone.local1
+al C:1012 .otherzone.local1
+al C:1016 .third_func
+al C:1016 .third_func.loop
