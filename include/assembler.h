@@ -119,6 +119,7 @@ typedef struct {
     int byte_count;         /* Number of bytes generated */
     int needs_resolution;   /* 1 if has unresolved forward reference */
     char *source_text;      /* Original source line (owned, for listings) */
+    char *zone;             /* Zone for local label resolution (owned) */
     int cycles;             /* Cycle count (for listings) */
     int page_penalty;       /* 1 if +1 cycle on page cross */
 } AssembledLine;

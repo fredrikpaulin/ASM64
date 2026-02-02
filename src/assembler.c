@@ -99,6 +99,7 @@ void assembler_free(Assembler *as) {
     for (int i = 0; i < as->line_count; i++) {
         statement_free(as->lines[i].stmt);
         free(as->lines[i].source_text);
+        free(as->lines[i].zone);
     }
     free(as->lines);
 
@@ -142,6 +143,7 @@ void assembler_reset(Assembler *as) {
     for (int i = 0; i < as->line_count; i++) {
         statement_free(as->lines[i].stmt);
         free(as->lines[i].source_text);
+        free(as->lines[i].zone);
     }
     free(as->lines);
     as->lines = NULL;
@@ -340,6 +342,7 @@ static int add_assembled_line(Assembler *as, Statement *stmt, uint16_t address,
     line->stmt = stmt;
     line->address = address;
     line->source_text = source_text ? str_dup(source_text) : NULL;
+    line->zone = as->current_zone ? str_dup(as->current_zone) : NULL;
 
     /* Extract cycle info from instruction if available */
     if (stmt && stmt->type == STMT_INSTRUCTION) {
@@ -1875,6 +1878,9 @@ int assembler_pass2(Assembler *as) {
     free(as->current_zone);
     as->current_zone = NULL;
 
+    /* Reset macro unique counter so IDs match between passes */
+    as->macro_unique_counter = 0;
+
     /* Reset anonymous label tracking for pass 2 */
     anon_reset_pass(as->anon_labels);
 
@@ -1888,6 +1894,10 @@ int assembler_pass2(Assembler *as) {
          * The real_pc tracks actual output position separately when in pseudopc */
         as->pc = line->address;
         uint16_t start_pc = as->in_pseudopc ? as->real_pc : as->pc;
+
+        /* Restore zone for local label resolution */
+        free(as->current_zone);
+        as->current_zone = line->zone ? str_dup(line->zone) : NULL;
 
         /* Re-define labels for anonymous label tracking */
         if (stmt->label) {
@@ -2742,9 +2752,15 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
     }
 
     /* Assemble the expanded body */
-    /* Save current file/line */
+    /* Save current file/line and zone */
     const char *saved_file = as->current_file;
     int saved_line = as->current_line;
+    char *saved_zone = as->current_zone;
+
+    /* Create unique zone for this macro expansion */
+    char macro_zone[64];
+    snprintf(macro_zone, sizeof(macro_zone), "_macro_%d", exp->unique_id);
+    as->current_zone = strdup(macro_zone);
 
     /* Create a pseudo-filename for error messages */
     char macro_file[256];
@@ -2808,9 +2824,11 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
 
     free(expanded);
 
-    /* Restore file/line */
+    /* Restore file/line and zone */
     as->current_file = saved_file;
     as->current_line = saved_line;
+    free(as->current_zone);
+    as->current_zone = saved_zone;
 
     /* Pop expansion context */
     as->macro_depth--;
