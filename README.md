@@ -294,6 +294,26 @@ make test       # Run test suite
 make clean      # Remove build artifacts
 ```
 
+### Installation
+
+To install `asm64` to `/usr/local/bin`:
+
+```bash
+./install.sh
+```
+
+To install to a custom location:
+
+```bash
+INSTALL_DIR=~/bin ./install.sh
+```
+
+To uninstall:
+
+```bash
+sudo rm /usr/local/bin/asm64
+```
+
 ## License
 
 MIT License - see LICENSE file for details.
