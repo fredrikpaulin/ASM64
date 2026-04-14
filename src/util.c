@@ -46,7 +46,9 @@ char *str_ltrim(char *s) {
 
 char *str_rtrim(char *s) {
     if (!s) return NULL;
-    char *end = s + strlen(s) - 1;
+    size_t len = strlen(s);
+    if (len == 0) return s;
+    char *end = s + len - 1;
     while (end >= s && isspace((unsigned char)*end)) {
         *end = '\0';
         end--;
@@ -190,6 +192,10 @@ void hash_set(HashTable *table, const char *key, void *value) {
     /* Add new entry */
     entry = mem_alloc(sizeof(HashEntry));
     entry->key = str_dup(key);
+    if (!entry->key) {
+        free(entry);
+        return;
+    }
     entry->value = value;
     entry->next = table->buckets[idx];
     table->buckets[idx] = entry;

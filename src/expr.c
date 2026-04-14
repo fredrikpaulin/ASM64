@@ -697,10 +697,10 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
                     result.value = left.value ^ right.value;
                     break;
                 case BINARY_SHL:
-                    result.value = left.value << right.value;
+                    result.value = (right.value >= 32 || right.value < 0) ? 0 : (left.value << right.value);
                     break;
                 case BINARY_SHR:
-                    result.value = (uint32_t)left.value >> right.value;
+                    result.value = (right.value >= 32 || right.value < 0) ? 0 : ((uint32_t)left.value >> right.value);
                     break;
                 case BINARY_EQ:
                     result.value = (left.value == right.value) ? 1 : 0;

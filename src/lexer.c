@@ -515,6 +515,13 @@ Token lexer_peek(Lexer *lex) {
     lex->line_start = saved_line_start;
     lex->line = saved_line;
 
+    /* Free string allocation since we're rewinding - caller won't see this token */
+    if (tok.type == TOK_STRING && tok.value.string.data) {
+        free(tok.value.string.data);
+        tok.value.string.data = NULL;
+        tok.value.string.len = 0;
+    }
+
     return tok;
 }
 

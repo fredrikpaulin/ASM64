@@ -1994,6 +1994,12 @@ int assembler_assemble_file(Assembler *as, const char *filename) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
+    if (size < 0) {
+        fclose(f);
+        assembler_error(as, "cannot determine file size: %s", filename);
+        return -1;
+    }
+
     /* Read entire file */
     char *source = malloc(size + 1);
     if (!source) {
@@ -2408,6 +2414,13 @@ int assembler_include_binary(Assembler *as, const char *filename,
     /* Get file size */
     fseek(f, 0, SEEK_END);
     long file_size = ftell(f);
+
+    if (file_size < 0) {
+        assembler_error(as, "cannot determine file size: %s", filename);
+        fclose(f);
+        free(path);
+        return -1;
+    }
 
     if (offset < 0 || offset > file_size) {
         assembler_error(as, "binary offset %d out of range (file size %ld)", offset, file_size);
@@ -2973,7 +2986,7 @@ static char *substitute_loop_var(const char *body, const char *var_name, int32_t
 
     /* Allocate result */
     size_t new_len = strlen(body) + count * (value_len > var_len ? value_len - var_len : 0) + 1;
-    char *result = malloc(new_len + count * value_len);  /* Extra safety */
+    char *result = malloc(new_len);
     if (!result) return NULL;
 
     /* Second pass: do substitution */

@@ -2,6 +2,26 @@
 
 All notable changes to ASM64 are documented in this file.
 
+## [1.0.1] - 2026-04-14
+
+### Bug Fixes
+- Fixed crash in `str_rtrim()` when called with an empty string (unsigned underflow)
+- Fixed undefined behavior in expression evaluator when shift amount >= 32
+- Fixed unchecked `ftell()` return values in `assembler_assemble_file()` and `assembler_include_binary()` that could cause invalid allocations on I/O errors
+- Fixed partial allocation failure in `symbol_define()` and `symbol_reference()` that could leak memory or dereference NULL
+- Fixed memory leaks on `realloc` failure in directive and macro call argument parsing
+- Fixed `lexer_peek()` leaking string token allocations when peeking past string literals
+- Fixed `hash_set()` not checking `str_dup()` return, preventing NULL key dereference on OOM
+- Fixed `scope_push()` not checking `str_dup()` return for scope name
+
+### Performance
+- Fixed over-allocation in loop variable substitution that allocated ~2x needed memory per iteration
+
+### Cleanup
+- Removed unreachable dead code for default output filename generation in `main.c`
+
+---
+
 ## [1.0.0] - 2026-02-02
 
 ### Initial Release
@@ -87,4 +107,5 @@ ASM64 is a portable 6502/6510 cross-assembler designed for Commodore 64 developm
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 1.0.1 | 2026-04-14 | Bug fixes, memory safety, performance |
 | 1.0.0 | 2026-02-02 | Initial release |

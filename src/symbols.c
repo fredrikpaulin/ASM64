@@ -114,7 +114,9 @@ Symbol *symbol_define(SymbolTable *table, const char *name, int32_t value,
 
     sym->name = str_dup(name);
     sym->display_name = str_dup(name);
-    if (!sym->name) {
+    if (!sym->name || !sym->display_name) {
+        free(sym->name);
+        free(sym->display_name);
         free(sym);
         return NULL;
     }
@@ -171,7 +173,9 @@ Symbol *symbol_reference(SymbolTable *table, const char *name,
 
     sym->name = str_dup(name);
     sym->display_name = str_dup(name);
-    if (!sym->name) {
+    if (!sym->name || !sym->display_name) {
+        free(sym->name);
+        free(sym->display_name);
         free(sym);
         return NULL;
     }
@@ -290,6 +294,10 @@ Scope *scope_push(Scope *current, const char *name) {
     if (!scope) return current;
 
     scope->name = name ? str_dup(name) : NULL;
+    if (name && !scope->name) {
+        free(scope);
+        return current;
+    }
     scope->parent = current;
     return scope;
 }

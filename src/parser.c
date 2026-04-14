@@ -465,6 +465,10 @@ static Statement *parse_directive(Parser *parser, int line) {
                     Expr **new_args = realloc(args, arg_capacity * sizeof(Expr *));
                     if (!new_args) {
                         expr_free(arg);
+                        for (int k = 0; k < arg_count; k++) expr_free(args[k]);
+                        free(args);
+                        args = NULL;
+                        arg_count = 0;
                         break;
                     }
                     args = new_args;
@@ -488,6 +492,10 @@ static Statement *parse_directive(Parser *parser, int line) {
                     Expr **new_args = realloc(args, arg_capacity * sizeof(Expr *));
                     if (!new_args) {
                         expr_free(arg);
+                        for (int k = 0; k < arg_count; k++) expr_free(args[k]);
+                        free(args);
+                        args = NULL;
+                        arg_count = 0;
                         break;
                     }
                     args = new_args;
@@ -559,6 +567,10 @@ static Statement *parse_macro_call(Parser *parser, int line) {
                 char **new_args = realloc(args, arg_capacity * sizeof(char *));
                 if (!new_args) {
                     free(arg);
+                    for (int k = 0; k < arg_count; k++) free(args[k]);
+                    free(args);
+                    args = NULL;
+                    arg_count = 0;
                     break;
                 }
                 args = new_args;

@@ -5,7 +5,7 @@
 #include "error.h"
 #include "assembler.h"
 
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 #define MAX_DEFINES 64
 #define MAX_INCLUDE_PATHS 16
 
@@ -263,19 +263,6 @@ int main(int argc, char **argv) {
     if (result == 0) {
         /* Write output file */
         const char *output = g_options.output_file;
-        if (!output) {
-            /* Generate default output filename */
-            static char default_output[256];
-            const char *ext = (g_options.format == OUTPUT_PRG) ? ".prg" : ".bin";
-            const char *dot = strrchr(g_options.input_file, '.');
-            if (dot) {
-                int len = (int)(dot - g_options.input_file);
-                snprintf(default_output, sizeof(default_output), "%.*s%s", len, g_options.input_file, ext);
-            } else {
-                snprintf(default_output, sizeof(default_output), "%s%s", g_options.input_file, ext);
-            }
-            output = default_output;
-        }
 
         result = assembler_write_output(as, output);
         if (result == 0 && g_options.verbose) {
