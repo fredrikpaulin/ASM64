@@ -38,6 +38,8 @@ typedef enum {
     BINARY_AND,     /* & (bitwise and) */
     BINARY_OR,      /* | (bitwise or) */
     BINARY_XOR,     /* ^ (bitwise xor) */
+    BINARY_LAND,    /* && (logical and) */
+    BINARY_LOR,     /* || (logical or) */
     BINARY_SHL,     /* << (shift left) */
     BINARY_SHR,     /* >> (shift right) */
     BINARY_EQ,      /* = (equal) */

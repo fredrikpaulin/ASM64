@@ -248,6 +248,56 @@ TEST(cmp_greater_equal) {
     return eval("5 >= 3") == 1 && eval("5 >= 5") == 1 && eval("4 >= 5") == 0;
 }
 
+/* ========== Logical Operator Tests ========== */
+
+TEST(logical_and) {
+    return eval("1 && 1") == 1 &&
+           eval("1 && 2") == 1 &&
+           eval("1 && 0") == 0 &&
+           eval("0 && 1") == 0;
+}
+
+TEST(logical_or) {
+    return eval("0 || 0") == 0 &&
+           eval("0 || 2") == 1 &&
+           eval("1 || 0") == 1 &&
+           eval("3 || 4") == 1;
+}
+
+TEST(logical_precedence) {
+    return eval("1 || 0 && 0") == 1 &&
+           eval("1 | 2 && 0") == 0 &&
+           eval("0 || 1 | 2") == 1;
+}
+
+TEST(logical_short_circuit_errors) {
+    ExprResult r1 = parse_eval("0 && 10 / 0", NULL, 0);
+    ExprResult r2 = parse_eval("1 || 10 / 0", NULL, 0);
+    ExprResult r3 = parse_eval("1 && 10 / 0", NULL, 0);
+    ExprResult r4 = parse_eval("0 || 10 / 0", NULL, 0);
+
+    return r1.error == 0 && r1.defined && r1.value == 0 &&
+           r2.error == 0 && r2.defined && r2.value == 1 &&
+           r3.error != 0 &&
+           r4.error != 0;
+}
+
+TEST(logical_short_circuit_undefined) {
+    ExprResult r1 = parse_eval("0 && MISSING", NULL, 0);
+    ExprResult r2 = parse_eval("1 || MISSING", NULL, 0);
+    ExprResult r3 = parse_eval("MISSING && 0", NULL, 0);
+    ExprResult r4 = parse_eval("MISSING || 1", NULL, 0);
+    ExprResult r5 = parse_eval("1 && MISSING", NULL, 0);
+    ExprResult r6 = parse_eval("0 || MISSING", NULL, 0);
+
+    return r1.defined && r1.value == 0 &&
+           r2.defined && r2.value == 1 &&
+           r3.defined && r3.value == 0 &&
+           r4.defined && r4.value == 1 &&
+           !r5.defined &&
+           !r6.defined;
+}
+
 /* ========== Symbol Tests ========== */
 
 TEST(symbol_lookup) {
@@ -507,6 +557,13 @@ int main(void) {
     RUN_TEST(cmp_greater_than);
     RUN_TEST(cmp_less_equal);
     RUN_TEST(cmp_greater_equal);
+
+    printf("\nLogical Operators:\n");
+    RUN_TEST(logical_and);
+    RUN_TEST(logical_or);
+    RUN_TEST(logical_precedence);
+    RUN_TEST(logical_short_circuit_errors);
+    RUN_TEST(logical_short_circuit_undefined);
 
     printf("\nSymbol Handling:\n");
     RUN_TEST(symbol_lookup);

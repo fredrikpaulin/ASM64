@@ -488,8 +488,12 @@ Token lexer_next(Lexer *lex) {
         case '*': return make_token(lex, TOK_STAR, start);
         case '/': return make_token(lex, TOK_SLASH, start);
         case '%': return make_token(lex, TOK_PERCENT, start);
-        case '&': return make_token(lex, TOK_AMP, start);
-        case '|': return make_token(lex, TOK_PIPE, start);
+        case '&':
+            if (match(lex, '&')) return make_token(lex, TOK_LAND, start);
+            return make_token(lex, TOK_AMP, start);
+        case '|':
+            if (match(lex, '|')) return make_token(lex, TOK_LOR, start);
+            return make_token(lex, TOK_PIPE, start);
         case '^': return make_token(lex, TOK_CARET, start);
         case '~': return make_token(lex, TOK_TILDE, start);
         case '!': return make_token(lex, TOK_BANG, start);
@@ -552,6 +556,8 @@ const char *token_type_name(TokenType type) {
         case TOK_PERCENT: return "PERCENT";
         case TOK_AMP: return "AMP";
         case TOK_PIPE: return "PIPE";
+        case TOK_LAND: return "LAND";
+        case TOK_LOR: return "LOR";
         case TOK_CARET: return "CARET";
         case TOK_TILDE: return "TILDE";
         case TOK_BANG: return "BANG";

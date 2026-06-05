@@ -244,9 +244,9 @@ TEST(operators) {
 }
 
 TEST(two_char_operators) {
-    const char *src = "<< >> <= >= <>";
+    const char *src = "<< >> <= >= <> && ||";
     TokenType expected[] = {
-        TOK_LSHIFT, TOK_RSHIFT, TOK_LE, TOK_GE, TOK_NE, TOK_EOF
+        TOK_LSHIFT, TOK_RSHIFT, TOK_LE, TOK_GE, TOK_NE, TOK_LAND, TOK_LOR, TOK_EOF
     };
 
     Lexer lex;

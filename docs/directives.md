@@ -302,6 +302,8 @@ Expressions can be used in most directive arguments:
 | `>` | Greater than |
 | `<=` | Less or equal |
 | `>=` | Greater or equal |
+| `&&` | Logical AND |
+| `\|\|` | Logical OR |
 | `!` | Logical NOT |
 
-Expression errors fail assembly. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and undefined `!if` conditions are reported instead of being silently folded to zero.
+Expression errors fail assembly. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and undefined `!if` conditions are reported instead of being silently folded to zero. Logical `&&` and `||` short-circuit.
