@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdint.h>
+#include <limits.h>
 
 /* Character classification helpers */
 static int is_alpha(char c) {
@@ -91,7 +93,7 @@ static void skip_whitespace(Lexer *lex) {
 
 /* Parse hexadecimal number after $ prefix */
 static Token parse_hex(Lexer *lex, const char *start) {
-    int32_t value = 0;
+    uint32_t value = 0;
     int digits = 0;
 
     while (is_hex_digit(peek(lex))) {
@@ -101,12 +103,12 @@ static Token parse_hex(Lexer *lex, const char *start) {
         else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
         else digit = c - 'A' + 10;
 
-        value = (value << 4) | digit;
         digits++;
 
         if (digits > 8) {
             return error_token(lex, "hex number too large");
         }
+        value = (value << 4) | (uint32_t)digit;
     }
 
     if (digits == 0) {
@@ -114,23 +116,27 @@ static Token parse_hex(Lexer *lex, const char *start) {
     }
 
     Token tok = make_token(lex, TOK_NUMBER, start);
-    tok.value.number = value;
+    if (value <= (uint32_t)INT32_MAX) {
+        tok.value.number = (int32_t)value;
+    } else {
+        tok.value.number = (int32_t)((int64_t)value - 0x100000000LL);
+    }
     return tok;
 }
 
 /* Parse binary number after % prefix */
 static Token parse_binary(Lexer *lex, const char *start) {
-    int32_t value = 0;
+    uint32_t value = 0;
     int digits = 0;
 
     while (is_binary_digit(peek(lex))) {
         char c = advance(lex);
-        value = (value << 1) | (c - '0');
         digits++;
 
         if (digits > 32) {
             return error_token(lex, "binary number too large");
         }
+        value = (value << 1) | (uint32_t)(c - '0');
     }
 
     if (digits == 0) {
@@ -138,30 +144,31 @@ static Token parse_binary(Lexer *lex, const char *start) {
     }
 
     Token tok = make_token(lex, TOK_NUMBER, start);
-    tok.value.number = value;
+    if (value <= (uint32_t)INT32_MAX) {
+        tok.value.number = (int32_t)value;
+    } else {
+        tok.value.number = (int32_t)((int64_t)value - 0x100000000LL);
+    }
     return tok;
 }
 
 /* Parse decimal number */
 static Token parse_decimal(Lexer *lex, const char *start) {
-    int32_t value = 0;
+    int64_t value = 0;
 
     /* We already consumed the first digit, back up */
     lex->current = start;
 
     while (is_digit(peek(lex))) {
         char c = advance(lex);
-        int32_t new_value = value * 10 + (c - '0');
-
-        /* Check for overflow */
-        if (new_value < value) {
+        value = value * 10 + (c - '0');
+        if (value > INT32_MAX) {
             return error_token(lex, "decimal number too large");
         }
-        value = new_value;
     }
 
     Token tok = make_token(lex, TOK_NUMBER, start);
-    tok.value.number = value;
+    tok.value.number = (int32_t)value;
     return tok;
 }
 

@@ -422,6 +422,11 @@ static const OpcodeEntry opcode_table[] = {
 /* Number of entries (calculated at init) */
 static int opcode_count = 0;
 
+#define OPCODE_HASH_SIZE 257
+static int opcode_hash_heads[OPCODE_HASH_SIZE];
+static int opcode_hash_next[sizeof(opcode_table) / sizeof(opcode_table[0])];
+static const OpcodeEntry *opcode_by_byte[256];
+
 /* Mnemonic information table for quick lookup */
 static const MnemonicInfo mnemonic_info[] = {
     /* Official instructions */
@@ -572,18 +577,49 @@ static int strcasecmp_local(const char *s1, const char *s2) {
     return toupper((unsigned char)*s1) - toupper((unsigned char)*s2);
 }
 
+static unsigned int opcode_hash_key(const char *mnemonic, AddressingMode mode) {
+    unsigned int hash = 5381u;
+    while (*mnemonic) {
+        hash = ((hash << 5) + hash) + (unsigned int)toupper((unsigned char)*mnemonic);
+        mnemonic++;
+    }
+    hash = ((hash << 5) + hash) + (unsigned int)mode;
+    return hash % OPCODE_HASH_SIZE;
+}
+
 /* Initialize opcode tables */
 void opcodes_init(void) {
+    for (int i = 0; i < OPCODE_HASH_SIZE; i++) {
+        opcode_hash_heads[i] = -1;
+    }
+    for (size_t i = 0; i < sizeof(opcode_hash_next) / sizeof(opcode_hash_next[0]); i++) {
+        opcode_hash_next[i] = -1;
+    }
+    for (int i = 0; i < 256; i++) {
+        opcode_by_byte[i] = NULL;
+    }
+
     /* Count entries in opcode table */
     opcode_count = 0;
     while (opcode_table[opcode_count].mnemonic != NULL) {
+        unsigned int hash = opcode_hash_key(opcode_table[opcode_count].mnemonic,
+                                            opcode_table[opcode_count].mode);
+        opcode_hash_next[opcode_count] = opcode_hash_heads[hash];
+        opcode_hash_heads[hash] = opcode_count;
+        if (!opcode_by_byte[opcode_table[opcode_count].opcode]) {
+            opcode_by_byte[opcode_table[opcode_count].opcode] = &opcode_table[opcode_count];
+        }
         opcode_count++;
     }
 }
 
 /* Find opcode entry by mnemonic and addressing mode */
 const OpcodeEntry *opcode_find(const char *mnemonic, AddressingMode mode) {
-    for (int i = 0; i < opcode_count; i++) {
+    if (!mnemonic) return NULL;
+    if (opcode_count == 0) opcodes_init();
+
+    unsigned int hash = opcode_hash_key(mnemonic, mode);
+    for (int i = opcode_hash_heads[hash]; i >= 0; i = opcode_hash_next[i]) {
         if (strcasecmp_local(opcode_table[i].mnemonic, mnemonic) == 0 &&
             opcode_table[i].mode == mode) {
             return &opcode_table[i];
@@ -650,10 +686,6 @@ const char *opcode_mode_name(AddressingMode mode) {
 
 /* Find opcode entry by opcode byte */
 const OpcodeEntry *opcode_find_by_opcode(uint8_t opcode) {
-    for (int i = 0; i < opcode_count; i++) {
-        if (opcode_table[i].opcode == opcode) {
-            return &opcode_table[i];
-        }
-    }
-    return NULL;
+    if (opcode_count == 0) opcodes_init();
+    return opcode_by_byte[opcode];
 }

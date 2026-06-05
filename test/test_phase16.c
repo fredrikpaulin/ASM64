@@ -280,6 +280,56 @@ TEST(cpu_invalid) {
     return passed;
 }
 
+TEST(cpu_6502_rejects_illegal_lax) {
+    Assembler *as = assembler_create();
+
+    const char *src =
+        "*=$1000\n"
+        "!cpu 6502\n"
+        "    lax $80\n";
+
+    int result = assembler_assemble_string(as, src, "test.asm");
+    int passed = (result > 0 && as->errors > 0);
+
+    assembler_free(as);
+    return passed;
+}
+
+TEST(cpu_6510_accepts_illegal_lax) {
+    Assembler *as = assembler_create();
+
+    const char *src =
+        "*=$1000\n"
+        "!cpu 6510\n"
+        "    lax $80\n";
+
+    int result = assembler_assemble_string(as, src, "test.asm");
+    int passed = (result == 0 && as->errors == 0);
+
+    assembler_free(as);
+    return passed;
+}
+
+TEST(assembler_reuse_resets_cpu_mode) {
+    Assembler *as = assembler_create();
+
+    const char *first =
+        "*=$1000\n"
+        "!cpu 6502\n"
+        "    nop\n";
+    const char *second =
+        "*=$1000\n"
+        "    lax $80\n";
+
+    int first_result = assembler_assemble_string(as, first, "first.asm");
+    int second_result = assembler_assemble_string(as, second, "second.asm");
+    int passed = (first_result == 0 && second_result == 0 && as->errors == 0 &&
+                  as->cpu_type == CPU_6510);
+
+    assembler_free(as);
+    return passed;
+}
+
 /* ========== Error/Warn Directive Tests ========== */
 
 TEST(error_directive) {
@@ -337,6 +387,9 @@ int main(void) {
     RUN_TEST(cpu_6510);
     RUN_TEST(cpu_65c02);
     RUN_TEST(cpu_invalid);
+    RUN_TEST(cpu_6502_rejects_illegal_lax);
+    RUN_TEST(cpu_6510_accepts_illegal_lax);
+    RUN_TEST(assembler_reuse_resets_cpu_mode);
 
     printf("\nError/Warn Tests:\n");
     RUN_TEST(error_directive);

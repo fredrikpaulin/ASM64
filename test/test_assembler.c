@@ -257,6 +257,16 @@ TEST(label_expression) {
     return check_output("*=$1000\ndata: NOP\nLDA data+1", expected, 4, 0x1000);
 }
 
+TEST(anonymous_forward_two_refs) {
+    uint8_t expected[] = { 0xD0, 0x02, 0xF0, 0x00, 0x60 };
+    return check_output("*=$1000\nBNE +\nBEQ +\n+\nRTS", expected, 5, 0x1000);
+}
+
+TEST(anonymous_forward_mixed_counts) {
+    uint8_t expected[] = { 0xD0, 0x01, 0xEA, 0x60 };
+    return check_output("*=$1000\nBNE ++\n+\nNOP\n+\nRTS", expected, 4, 0x1000);
+}
+
 /* ========== Directive Tests ========== */
 
 TEST(byte_single) {
@@ -429,6 +439,26 @@ TEST(branch_out_of_range_forward) {
     return check_error(source);
 }
 
+TEST(expression_divide_by_zero_error) {
+    return check_error("*=$1000\n!byte 10 / 0");
+}
+
+TEST(expression_modulo_by_zero_error) {
+    return check_error("*=$1000\n!byte 10 % 0");
+}
+
+TEST(expression_overflow_error) {
+    return check_error("*=$1000\n!byte 2147483647 + 1");
+}
+
+TEST(expression_invalid_shift_error) {
+    return check_error("*=$1000\n!byte 1 << 32");
+}
+
+TEST(pc_crosses_64k_error) {
+    return check_error("*=$FFFF\n!byte 1, 2");
+}
+
 /* ========== Main ========== */
 
 int main(void) {
@@ -484,6 +514,8 @@ int main(void) {
     RUN_TEST(backward_reference);
     RUN_TEST(multiple_labels);
     RUN_TEST(label_expression);
+    RUN_TEST(anonymous_forward_two_refs);
+    RUN_TEST(anonymous_forward_mixed_counts);
 
     printf("\nDirectives:\n");
     RUN_TEST(byte_single);
@@ -521,6 +553,11 @@ int main(void) {
     RUN_TEST(undefined_symbol_error);
     RUN_TEST(invalid_mnemonic_error);
     RUN_TEST(branch_out_of_range_forward);
+    RUN_TEST(expression_divide_by_zero_error);
+    RUN_TEST(expression_modulo_by_zero_error);
+    RUN_TEST(expression_overflow_error);
+    RUN_TEST(expression_invalid_shift_error);
+    RUN_TEST(pc_crosses_64k_error);
 
     printf("\n===============\n");
     printf("Results: %d/%d passed\n\n", tests_passed, tests_run);

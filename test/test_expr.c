@@ -32,7 +32,7 @@ static ExprResult parse_eval(const char *text, SymbolTable *symbols, uint16_t pc
     lexer_init(&lexer, text, "test");
     expr_parser_init(&parser, &lexer);
     Expr *expr = expr_parse(&parser);
-    ExprResult result = { 0, 0, 0 };
+    ExprResult result = {0};
     if (expr) {
         result = expr_eval(expr, symbols, NULL, pc, 2, NULL);
         expr_free(expr);
@@ -397,12 +397,34 @@ TEST(is_simple_number) {
 /* ========== Edge Cases ========== */
 
 TEST(division_by_zero) {
-    /* Should not crash, returns 0 */
-    return eval("10 / 0") == 0;
+    ExprResult r = parse_eval("10 / 0", NULL, 0);
+    return r.error != 0;
 }
 
 TEST(modulo_by_zero) {
-    return eval("10 % 0") == 0;
+    ExprResult r = parse_eval("10 % 0", NULL, 0);
+    return r.error != 0;
+}
+
+TEST(arithmetic_overflow) {
+    ExprResult r = parse_eval("2147483647 + 1", NULL, 0);
+    return r.error != 0;
+}
+
+TEST(left_shift_overflow) {
+    ExprResult r = parse_eval("1 << 31", NULL, 0);
+    return r.error != 0;
+}
+
+TEST(invalid_shift_count) {
+    ExprResult r1 = parse_eval("1 << 32", NULL, 0);
+    ExprResult r2 = parse_eval("1 >> -1", NULL, 0);
+    return r1.error != 0 && r2.error != 0;
+}
+
+TEST(int32_min_division_overflow) {
+    ExprResult r = parse_eval("$80000000 / -1", NULL, 0);
+    return r.error != 0;
 }
 
 TEST(complex_expression) {
@@ -517,6 +539,10 @@ int main(void) {
     printf("\nEdge Cases:\n");
     RUN_TEST(division_by_zero);
     RUN_TEST(modulo_by_zero);
+    RUN_TEST(arithmetic_overflow);
+    RUN_TEST(left_shift_overflow);
+    RUN_TEST(invalid_shift_count);
+    RUN_TEST(int32_min_division_overflow);
     RUN_TEST(complex_expression);
     RUN_TEST(deeply_nested);
     RUN_TEST(negative_result);

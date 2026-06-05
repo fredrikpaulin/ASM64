@@ -38,9 +38,17 @@ static char *token_to_upper(Token *tok) {
     return str;
 }
 
+static void str_to_lower_inplace(char *s) {
+    if (!s) return;
+    for (char *p = s; *p; p++) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+}
+
 /* ========== Parser Core ========== */
 
 static void advance(Parser *parser) {
+    token_free(&parser->previous);
     parser->previous = parser->current;
     parser->current = lexer_next(parser->lexer);
 }
@@ -67,10 +75,14 @@ void parser_init(Parser *parser, Lexer *lexer, SymbolTable *symbols) {
     parser->pc = 0x0801;  /* Default C64 BASIC start */
     parser->pass = 1;
     parser->error = NULL;
+    memset(&parser->current, 0, sizeof(parser->current));
+    memset(&parser->previous, 0, sizeof(parser->previous));
+    parser->current.type = TOK_EOF;
+    parser->previous.type = TOK_EOF;
     advance(parser);  /* Load first token */
 }
 
-void parser_set_pc(Parser *parser, uint16_t pc) {
+void parser_set_pc(Parser *parser, uint32_t pc) {
     parser->pc = pc;
 }
 
@@ -89,7 +101,7 @@ static Statement *statement_new(StatementType type, int line, const char *file) 
     if (!stmt) return NULL;
     stmt->type = type;
     stmt->line = line;
-    stmt->file = file;
+    stmt->file = str_dup(file ? file : "<input>");
     return stmt;
 }
 
@@ -141,6 +153,7 @@ void statement_free(Statement *stmt) {
     }
 
     free(stmt->error_msg);
+    free(stmt->file);
     free(stmt);
 }
 
@@ -177,6 +190,9 @@ static OperandInfo parse_operand(Parser *parser) {
         expr_parser_init_with_token(&expr_parser, parser->lexer, parser->current);
         info.expr = expr_parse(&expr_parser);
         parser->current = expr_parser.current;
+        if (!info.expr && expr_parser_error(&expr_parser)) {
+            parser->error = expr_parser_error(&expr_parser);
+        }
 
         /* Check for ,X before closing paren: (expr,X) */
         if (match(parser, TOK_COMMA)) {
@@ -211,6 +227,9 @@ static OperandInfo parse_operand(Parser *parser) {
         expr_parser_init_with_token(&expr_parser, parser->lexer, parser->current);
         info.expr = expr_parse(&expr_parser);
         parser->current = expr_parser.current;
+        if (!info.expr && expr_parser_error(&expr_parser)) {
+            parser->error = expr_parser_error(&expr_parser);
+        }
 
         /* Check for index register suffix */
         if (match(parser, TOK_COMMA)) {
@@ -359,6 +378,14 @@ static Statement *parse_instruction(Parser *parser, const char *mnemonic, int li
 
     /* Parse operand */
     OperandInfo operand = parse_operand(parser);
+    if (parser->error) {
+        free(stmt->data.instruction.mnemonic);
+        expr_free(operand.expr);
+        memset(&stmt->data, 0, sizeof(stmt->data));
+        stmt->type = STMT_ERROR;
+        stmt->error_msg = str_dup(parser->error);
+        return stmt;
+    }
     stmt->data.instruction.operand = operand.expr;
     stmt->data.instruction.forced_zp = operand.forced_zp;
     stmt->data.instruction.forced_abs = operand.forced_abs;
@@ -428,8 +455,10 @@ static Statement *parse_directive(Parser *parser, int line) {
     char *full_name = token_to_string(&parser->current);
     if (full_name && full_name[0] == '!') {
         stmt->data.directive.name = str_dup(full_name + 1);
+        str_to_lower_inplace(stmt->data.directive.name);
     } else {
         stmt->data.directive.name = full_name;
+        str_to_lower_inplace(stmt->data.directive.name);
         full_name = NULL;
     }
     free(full_name);
@@ -439,6 +468,7 @@ static Statement *parse_directive(Parser *parser, int line) {
     Expr **args = NULL;
     int arg_count = 0;
     int arg_capacity = 0;
+    int parse_failed = 0;
 
     /* Special handling for !macro directive: parse space-separated identifiers */
     int is_macro_directive = (strcasecmp(stmt->data.directive.name, "macro") == 0);
@@ -501,6 +531,10 @@ static Statement *parse_directive(Parser *parser, int line) {
                     args = new_args;
                 }
                 args[arg_count++] = arg;
+            } else if (expr_parser_error(&expr_parser)) {
+                parser->error = expr_parser_error(&expr_parser);
+                parse_failed = 1;
+                break;
             }
         }
 
@@ -510,8 +544,18 @@ static Statement *parse_directive(Parser *parser, int line) {
         }
     }
 
-    stmt->data.directive.args = args;
-    stmt->data.directive.arg_count = arg_count;
+    if (parse_failed) {
+        for (int i = 0; i < arg_count; i++) expr_free(args[i]);
+        free(args);
+        free(stmt->data.directive.name);
+        free(stmt->data.directive.string_arg);
+        memset(&stmt->data, 0, sizeof(stmt->data));
+        stmt->type = STMT_ERROR;
+        stmt->error_msg = str_dup(parser->error);
+    } else {
+        stmt->data.directive.args = args;
+        stmt->data.directive.arg_count = arg_count;
+    }
 
     return stmt;
 }
@@ -532,6 +576,13 @@ static Statement *parse_assignment(Parser *parser, const char *name, int line) {
     expr_parser_init_with_token(&expr_parser, parser->lexer, parser->current);
     stmt->data.assignment.value = expr_parse(&expr_parser);
     parser->current = expr_parser.current;
+    if (!stmt->data.assignment.value && expr_parser_error(&expr_parser)) {
+        parser->error = expr_parser_error(&expr_parser);
+        free(stmt->data.assignment.name);
+        memset(&stmt->data, 0, sizeof(stmt->data));
+        stmt->type = STMT_ERROR;
+        stmt->error_msg = str_dup(parser->error);
+    }
 
     return stmt;
 }
@@ -600,6 +651,11 @@ Statement *parser_parse_line(Parser *parser) {
     if (at_line_end(parser)) {
         Statement *stmt = statement_new(STMT_EMPTY, line, parser->lexer->filename);
         if (check(parser, TOK_EOL)) advance(parser);
+        if (check(parser, TOK_EOF)) {
+            token_free(&parser->previous);
+            memset(&parser->previous, 0, sizeof(parser->previous));
+            parser->previous.type = TOK_EOF;
+        }
         return stmt;
     }
 
@@ -676,9 +732,10 @@ Statement *parser_parse_line(Parser *parser) {
             } else {
                 /* Unknown identifier - could be macro or error */
                 stmt = statement_new(STMT_ERROR, line, parser->lexer->filename);
-                stmt->error_msg = malloc(64 + strlen(name));
+                size_t msg_len = 64 + strlen(name);
+                stmt->error_msg = malloc(msg_len);
                 if (stmt->error_msg) {
-                    sprintf(stmt->error_msg, "unknown instruction or directive: %s", name);
+                    snprintf(stmt->error_msg, msg_len, "unknown instruction or directive: %s", name);
                 }
                 advance(parser);
             }
@@ -697,8 +754,21 @@ Statement *parser_parse_line(Parser *parser) {
 
                 if (arg) {
                     stmt->data.directive.args = malloc(sizeof(Expr *));
-                    stmt->data.directive.args[0] = arg;
-                    stmt->data.directive.arg_count = 1;
+                    if (stmt->data.directive.args) {
+                        stmt->data.directive.args[0] = arg;
+                        stmt->data.directive.arg_count = 1;
+                    } else {
+                        expr_free(arg);
+                        free(stmt->data.directive.name);
+                        memset(&stmt->data, 0, sizeof(stmt->data));
+                        stmt->type = STMT_ERROR;
+                        stmt->error_msg = str_dup("out of memory");
+                    }
+                } else if (expr_parser_error(&expr_parser)) {
+                    free(stmt->data.directive.name);
+                    memset(&stmt->data, 0, sizeof(stmt->data));
+                    stmt->type = STMT_ERROR;
+                    stmt->error_msg = str_dup(expr_parser_error(&expr_parser));
                 }
             } else {
                 stmt = statement_new(STMT_ERROR, line, parser->lexer->filename);
@@ -730,6 +800,11 @@ done:
         advance(parser);
     }
     if (check(parser, TOK_EOL)) advance(parser);
+    if (check(parser, TOK_EOF)) {
+        token_free(&parser->previous);
+        memset(&parser->previous, 0, sizeof(parser->previous));
+        parser->previous.type = TOK_EOF;
+    }
 
     return stmt;
 }

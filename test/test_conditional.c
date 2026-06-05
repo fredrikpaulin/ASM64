@@ -377,6 +377,19 @@ TEST(double_else) {
     assembler_free(as);
 }
 
+TEST(if_forward_reference_errors) {
+    Assembler *as = assembler_create();
+    const char *source =
+        "* = $1000\n"
+        "!if LATER\n"
+        "    nop\n"
+        "!endif\n"
+        "LATER = 1\n";
+    int errors = assembler_assemble_string(as, source, "test.asm");
+    ASSERT(errors > 0);
+    assembler_free(as);
+}
+
 /* ========== Main ========== */
 
 int main(void) {
@@ -418,6 +431,7 @@ int main(void) {
     RUN_TEST(endif_without_if);
     RUN_TEST(unclosed_if);
     RUN_TEST(double_else);
+    RUN_TEST(if_forward_reference_errors);
 
     printf("\n==========================\n");
     printf("Total: %d passed, %d failed\n", tests_passed, tests_failed);

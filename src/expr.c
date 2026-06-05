@@ -17,6 +17,27 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
+
+static ExprResult expr_error(const char *message) {
+    ExprResult result = { 0, 0, 0, 1, message };
+    return result;
+}
+
+static int32_t int32_from_u32(uint32_t value) {
+    if (value <= (uint32_t)INT32_MAX) {
+        return (int32_t)value;
+    }
+    return (int32_t)((int64_t)value - 0x100000000LL);
+}
+
+static int checked_int32(int64_t value, int32_t *out) {
+    if (value < INT32_MIN || value > INT32_MAX) {
+        return 0;
+    }
+    *out = (int32_t)value;
+    return 1;
+}
 
 /* ========== Expression Creation ========== */
 
@@ -422,6 +443,11 @@ static Expr *parse_unary(ExprParser *parser) {
 
 /* Primary: number, symbol, *, (expr) */
 static Expr *parse_primary(ExprParser *parser) {
+    if (parser_check(parser, TOK_ERROR)) {
+        parser->error = parser->current.start ? parser->current.start : "lexer error";
+        return NULL;
+    }
+
     /* Number literal */
     if (parser_check(parser, TOK_NUMBER)) {
         int32_t value = parser->current.value.number;
@@ -539,8 +565,8 @@ static char *mangle_local_name(const char *name, const char *zone) {
     return mangled;
 }
 
-ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass, const char *current_zone) {
-    ExprResult result = { 0, 1, 0 };  /* Default: value=0, defined=true */
+ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint32_t pc, int pass, const char *current_zone) {
+    ExprResult result = { 0, 1, 0, 0, NULL };  /* Default: value=0, defined=true */
 
     if (!expr) {
         result.defined = 0;
@@ -554,6 +580,9 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
             break;
 
         case EXPR_CURRENT:
+            if (pc > (uint32_t)INT32_MAX) {
+                return expr_error("program counter value out of expression range");
+            }
             result.value = pc;
             result.is_zeropage = (pc <= 0xFF);
             break;
@@ -580,8 +609,6 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
                         result.defined = 1;
                         result.is_zeropage = (addr <= 0xFF);
                     }
-                    /* Advance the forward index after resolution */
-                    anon_advance_forward(anon);
                 }
                 break;
             }
@@ -633,24 +660,31 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
 
         case EXPR_UNARY: {
             ExprResult operand = expr_eval(expr->data.unary.operand, symbols, anon, pc, pass, current_zone);
+            if (operand.error) return operand;
             result.defined = operand.defined;
+            if (!operand.defined) {
+                break;
+            }
 
             switch (expr->data.unary.op) {
                 case UNARY_NEG:
+                    if (operand.value == INT32_MIN) {
+                        return expr_error("integer overflow in unary minus");
+                    }
                     result.value = -operand.value;
                     break;
                 case UNARY_NOT:
                     result.value = !operand.value;
                     break;
                 case UNARY_COMP:
-                    result.value = ~operand.value;
+                    result.value = int32_from_u32(~(uint32_t)operand.value);
                     break;
                 case UNARY_LOW:
-                    result.value = operand.value & 0xFF;
+                    result.value = (int32_t)((uint32_t)operand.value & 0xFFU);
                     result.is_zeropage = 1;  /* Low byte always fits in ZP */
                     break;
                 case UNARY_HIGH:
-                    result.value = (operand.value >> 8) & 0xFF;
+                    result.value = (int32_t)(((uint32_t)operand.value >> 8) & 0xFFU);
                     result.is_zeropage = 1;  /* High byte always fits in ZP */
                     break;
             }
@@ -659,48 +693,70 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
 
         case EXPR_BINARY: {
             ExprResult left = expr_eval(expr->data.binary.left, symbols, anon, pc, pass, current_zone);
+            if (left.error) return left;
             ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass, current_zone);
+            if (right.error) return right;
             result.defined = left.defined && right.defined;
+            if (!result.defined) {
+                break;
+            }
 
             switch (expr->data.binary.op) {
                 case BINARY_ADD:
-                    result.value = left.value + right.value;
+                    if (!checked_int32((int64_t)left.value + (int64_t)right.value, &result.value)) {
+                        return expr_error("integer overflow in addition");
+                    }
                     break;
                 case BINARY_SUB:
-                    result.value = left.value - right.value;
+                    if (!checked_int32((int64_t)left.value - (int64_t)right.value, &result.value)) {
+                        return expr_error("integer overflow in subtraction");
+                    }
                     break;
                 case BINARY_MUL:
-                    result.value = left.value * right.value;
+                    if (!checked_int32((int64_t)left.value * (int64_t)right.value, &result.value)) {
+                        return expr_error("integer overflow in multiplication");
+                    }
                     break;
                 case BINARY_DIV:
                     if (right.value == 0) {
-                        result.value = 0;
-                        /* Could set an error flag here */
-                    } else {
-                        result.value = left.value / right.value;
+                        return expr_error("division by zero");
                     }
+                    if (left.value == INT32_MIN && right.value == -1) {
+                        return expr_error("integer overflow in division");
+                    }
+                    result.value = left.value / right.value;
                     break;
                 case BINARY_MOD:
                     if (right.value == 0) {
-                        result.value = 0;
-                    } else {
-                        result.value = left.value % right.value;
+                        return expr_error("modulo by zero");
                     }
+                    if (left.value == INT32_MIN && right.value == -1) {
+                        return expr_error("integer overflow in modulo");
+                    }
+                    result.value = left.value % right.value;
                     break;
                 case BINARY_AND:
-                    result.value = left.value & right.value;
+                    result.value = int32_from_u32((uint32_t)left.value & (uint32_t)right.value);
                     break;
                 case BINARY_OR:
-                    result.value = left.value | right.value;
+                    result.value = int32_from_u32((uint32_t)left.value | (uint32_t)right.value);
                     break;
                 case BINARY_XOR:
-                    result.value = left.value ^ right.value;
+                    result.value = int32_from_u32((uint32_t)left.value ^ (uint32_t)right.value);
                     break;
                 case BINARY_SHL:
-                    result.value = (right.value >= 32 || right.value < 0) ? 0 : (left.value << right.value);
+                    if (right.value < 0 || right.value >= 32) {
+                        return expr_error("invalid shift count");
+                    }
+                    if (!checked_int32((int64_t)left.value * (1LL << right.value), &result.value)) {
+                        return expr_error("integer overflow in left shift");
+                    }
                     break;
                 case BINARY_SHR:
-                    result.value = (right.value >= 32 || right.value < 0) ? 0 : ((uint32_t)left.value >> right.value);
+                    if (right.value < 0 || right.value >= 32) {
+                        return expr_error("invalid shift count");
+                    }
+                    result.value = int32_from_u32((uint32_t)left.value >> right.value);
                     break;
                 case BINARY_EQ:
                     result.value = (left.value == right.value) ? 1 : 0;
@@ -733,7 +789,7 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_
     return result;
 }
 
-int32_t expr_eval_value(Expr *expr, SymbolTable *symbols, uint16_t pc) {
+int32_t expr_eval_value(Expr *expr, SymbolTable *symbols, uint32_t pc) {
     ExprResult result = expr_eval(expr, symbols, NULL, pc, 2, NULL);
     return result.value;
 }

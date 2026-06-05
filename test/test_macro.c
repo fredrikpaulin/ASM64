@@ -277,6 +277,26 @@ TEST(unterminated_macro) {
     assembler_free(as);
 }
 
+TEST(assembler_reuse_drops_old_macros) {
+    Assembler *as = assembler_create();
+    const char *first =
+        "* = $1000\n"
+        "!macro old_macro\n"
+        "    nop\n"
+        "!endmacro\n"
+        "+old_macro\n";
+    const char *second =
+        "* = $1000\n"
+        "+old_macro\n";
+
+    int first_errors = assembler_assemble_string(as, first, "first.asm");
+    int second_errors = assembler_assemble_string(as, second, "second.asm");
+
+    ASSERT_EQ(first_errors, 0);
+    ASSERT(second_errors > 0);
+    assembler_free(as);
+}
+
 /* ========== Main ========== */
 
 int main(void) {
@@ -310,6 +330,7 @@ int main(void) {
     RUN_TEST(undefined_macro);
     RUN_TEST(wrong_arg_count);
     RUN_TEST(unterminated_macro);
+    RUN_TEST(assembler_reuse_drops_old_macros);
 
     printf("\n===========\n");
     printf("Total: %d passed, %d failed\n", tests_passed, tests_failed);

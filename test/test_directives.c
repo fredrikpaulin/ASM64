@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 /*
  * test_directives.c - Tests for Extended Directives and File Inclusion
  * ASM64 - 6502/6510 Assembler for Commodore 64
@@ -8,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <unistd.h>
 
 static int tests_passed = 0;
 static int tests_failed = 0;
@@ -68,6 +70,47 @@ static int assemble_and_check(const char *source, uint8_t *expected, int expecte
 
     assembler_free(as);
     return match;
+}
+
+static int assemble_capture_stderr(const char *source, const char *filename,
+                                   char *buffer, size_t buffer_size) {
+    char err_path[128];
+    snprintf(err_path, sizeof(err_path), "/tmp/asm64_stderr_%ld.txt", (long)getpid());
+
+    FILE *capture = fopen(err_path, "w+");
+    if (!capture) return -1;
+
+    int saved_stderr = dup(STDERR_FILENO);
+    if (saved_stderr < 0) {
+        fclose(capture);
+        unlink(err_path);
+        return -1;
+    }
+
+    fflush(stderr);
+    if (dup2(fileno(capture), STDERR_FILENO) < 0) {
+        close(saved_stderr);
+        fclose(capture);
+        unlink(err_path);
+        return -1;
+    }
+
+    Assembler *as = assembler_create();
+    int errors = as ? assembler_assemble_string(as, source, filename) : -1;
+    assembler_free(as);
+
+    fflush(stderr);
+    dup2(saved_stderr, STDERR_FILENO);
+    close(saved_stderr);
+
+    fseek(capture, 0, SEEK_SET);
+    if (buffer && buffer_size > 0) {
+        size_t read = fread(buffer, 1, buffer_size - 1, capture);
+        buffer[read] = '\0';
+    }
+    fclose(capture);
+    unlink(err_path);
+    return errors;
 }
 
 /* ========== PETSCII Directive Tests ========== */
@@ -288,6 +331,21 @@ TEST(word_16_alias) {
     ASSERT(assemble_and_check(source, expected, 2));
 }
 
+TEST(uppercase_directives) {
+    const char *source = "* = $1000\n!BYTE $12\n!WORD $3456";
+    uint8_t expected[] = { 0x12, 0x56, 0x34 };
+    ASSERT(assemble_and_check(source, expected, 3));
+}
+
+TEST(unknown_directive_errors) {
+    Assembler *as = assembler_create();
+    const char *source = "* = $1000\n!totallyunknown $12";
+    int errors = assembler_assemble_string(as, source, "test.asm");
+    ASSERT(errors > 0);
+    ASSERT_EQ(as->warnings, 0);
+    assembler_free(as);
+}
+
 /* ========== Include Path Tests ========== */
 
 TEST(include_path_add) {
@@ -410,6 +468,30 @@ TEST(source_include_basic) {
     assembler_free(as);
 }
 
+TEST(included_pass2_error_reports_include_file) {
+    char inc_path[128];
+    snprintf(inc_path, sizeof(inc_path), "/tmp/asm64_inc_diag_%ld.asm", (long)getpid());
+
+    FILE *f = fopen(inc_path, "w");
+    if (!f) {
+        printf("[SKIP - cannot create include file]\n");
+        return;
+    }
+    fprintf(f, "!byte missing_symbol\n");
+    fclose(f);
+
+    char source[256];
+    snprintf(source, sizeof(source), "* = $1000\n!source \"%s\"\n", inc_path);
+
+    char stderr_buf[1024];
+    int errors = assemble_capture_stderr(source, "main.asm", stderr_buf, sizeof(stderr_buf));
+    unlink(inc_path);
+
+    ASSERT(errors > 0);
+    ASSERT(strstr(stderr_buf, inc_path) != NULL);
+    ASSERT(strstr(stderr_buf, ":1: error:") != NULL);
+}
+
 TEST(include_nested_depth) {
     /* Test that include depth is limited */
     Assembler *as = assembler_create();
@@ -486,6 +568,26 @@ TEST(binary_with_offset) {
     ASSERT_EQ(output[1], 0xCC);
 
     assembler_free(as);
+}
+
+TEST(binary_span_out_of_range) {
+    FILE *f = fopen("/tmp/test_short.bin", "wb");
+    if (!f) {
+        printf("[SKIP - cannot create test file]\n");
+        return;
+    }
+    fputc(0x11, f);
+    fclose(f);
+
+    Assembler *as = assembler_create();
+    assembler_add_include_path(as, "/tmp");
+
+    const char *source = "* = $1000\n!binary \"test_short.bin\", 3, 0";
+    int errors = assembler_assemble_string(as, source, "test.asm");
+    ASSERT(errors > 0);
+
+    assembler_free(as);
+    unlink("/tmp/test_short.bin");
 }
 
 /* ========== BASIC Stub Directive Tests ========== */
@@ -614,7 +716,7 @@ TEST(pet_missing_string) {
     Assembler *as = assembler_create();
     const char *source = "* = $1000\n!pet";
     int errors = assembler_assemble_string(as, source, "test.asm");
-    /* Should be an error or just skip */
+    ASSERT(errors > 0);
     assembler_free(as);
 }
 
@@ -673,6 +775,7 @@ int main(void) {
     printf("\nAlias Tests:\n");
     RUN_TEST(byte_08_alias);
     RUN_TEST(word_16_alias);
+    RUN_TEST(uppercase_directives);
 
     printf("\nInclude Path Tests:\n");
     RUN_TEST(include_path_add);
@@ -687,11 +790,13 @@ int main(void) {
 
     printf("\nSource Include Tests:\n");
     RUN_TEST(source_include_basic);
+    RUN_TEST(included_pass2_error_reports_include_file);
     RUN_TEST(include_nested_depth);
 
     printf("\nBinary Include Tests:\n");
     RUN_TEST(binary_basic);
     RUN_TEST(binary_with_offset);
+    RUN_TEST(binary_span_out_of_range);
 
     printf("\nBASIC Stub Directive Tests:\n");
     RUN_TEST(basic_default);
@@ -703,6 +808,7 @@ int main(void) {
     RUN_TEST(pet_missing_string);
     RUN_TEST(skip_negative);
     RUN_TEST(align_zero);
+    RUN_TEST(unknown_directive_errors);
 
     printf("\n=========================\n");
     printf("Total: %d passed, %d failed\n", tests_passed, tests_failed);

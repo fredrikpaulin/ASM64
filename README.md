@@ -4,11 +4,11 @@ ASM64 is a modern, portable cross-assembler for the MOS 6502/6510 processor, des
 
 ## Features
 
-- **Full 6502/6510 instruction set** including illegal/undocumented opcodes
+- **6502/6510 CPU modes** with illegal/undocumented opcodes enabled by default for 6510
 - **ACME-compatible syntax** for easy migration of existing projects
 - **Powerful macro system** with parameters and local labels
 - **Conditional assembly** with `!if`, `!ifdef`, `!ifndef`
-- **Loop constructs** with `!for` directive
+- **Loop constructs** with `!for` and `!while`
 - **Pseudo-PC** for relocatable code (`!pseudopc`, `!realpc`)
 - **Automatic zero-page optimization**
 - **Expression evaluator** with full arithmetic and bitwise operators
@@ -69,7 +69,7 @@ Assemble and run:
 asm64 [options] <source.asm>
 
 Options:
-  -o <file>       Output filename (default: a.prg)
+  -o <file>       Output filename (default: source.prg)
   -f <format>     Output format: prg (default), raw
   -l <file>       Generate listing file
   -s <file>       Generate symbol file
@@ -152,12 +152,16 @@ bne label       ; Relative (branches)
 !fill 100, $00          ; Fill 100 bytes with $00
 ```
 
+Directive names are case-insensitive. Unknown directives are errors, since silently ignoring one usually produces a binary that is wrong with confidence.
+
 #### Program Counter
 
 ```asm
 *=$0801                 ; Set program counter
 !org $1000              ; Alternative syntax
 ```
+
+The program counter must stay inside `$0000-$FFFF`. Crossing the 64K address space is reported as an assembly error instead of wrapping to `$0000`.
 
 #### Macros
 
@@ -218,7 +222,7 @@ zp_routine:
 ```asm
 !cpu 6502           ; Standard 6502 (no illegal opcodes)
 !cpu 6510           ; 6510 with illegal opcodes (default)
-!cpu "65c02"        ; 65C02 extended instructions
+!cpu "65c02"        ; 65C02 mode, illegal opcodes rejected
 ```
 
 #### File Inclusion
@@ -226,7 +230,7 @@ zp_routine:
 ```asm
 !source "library.asm"       ; Include source file
 !binary "data.bin"          ; Include binary file
-!binary "sprite.bin", 63, 1 ; Include with offset and length
+!binary "sprite.bin", 63, 1 ; Include 63 bytes starting at offset 1
 ```
 
 #### Alignment and Skip
@@ -263,6 +267,8 @@ value = $80 >> 4        ; Right shift
 low = <$1234            ; Low byte ($34)
 high = >$1234           ; High byte ($12)
 ```
+
+Expression errors fail assembly. This includes division or modulo by zero, invalid shift counts, checked arithmetic overflow, and undefined symbols in `!if` conditions.
 
 ## Output Formats
 
