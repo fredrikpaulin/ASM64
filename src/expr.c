@@ -210,6 +210,8 @@ const char *expr_parser_error(ExprParser *parser) {
 }
 
 /* Forward declarations for recursive descent */
+static Expr *parse_logical_or(ExprParser *parser);
+static Expr *parse_logical_and(ExprParser *parser);
 static Expr *parse_or(ExprParser *parser);
 static Expr *parse_xor(ExprParser *parser);
 static Expr *parse_and(ExprParser *parser);
@@ -223,7 +225,43 @@ static Expr *parse_primary(ExprParser *parser);
 /* Main entry point */
 Expr *expr_parse(ExprParser *parser) {
     parser->error = NULL;
-    return parse_or(parser);
+    return parse_logical_or(parser);
+}
+
+/* Logical OR: expr || expr */
+static Expr *parse_logical_or(ExprParser *parser) {
+    Expr *left = parse_logical_and(parser);
+    if (!left) return NULL;
+
+    while (parser_check(parser, TOK_LOR)) {
+        parser_advance(parser);
+        Expr *right = parse_logical_and(parser);
+        if (!right) {
+            expr_free(left);
+            return NULL;
+        }
+        left = expr_binary(BINARY_LOR, left, right);
+        if (!left) return NULL;
+    }
+    return left;
+}
+
+/* Logical AND: expr && expr */
+static Expr *parse_logical_and(ExprParser *parser) {
+    Expr *left = parse_or(parser);
+    if (!left) return NULL;
+
+    while (parser_check(parser, TOK_LAND)) {
+        parser_advance(parser);
+        Expr *right = parse_or(parser);
+        if (!right) {
+            expr_free(left);
+            return NULL;
+        }
+        left = expr_binary(BINARY_LAND, left, right);
+        if (!left) return NULL;
+    }
+    return left;
 }
 
 /* OR: expr | expr */
@@ -497,7 +535,7 @@ static Expr *parse_primary(ExprParser *parser) {
     /* Parenthesized expression */
     if (parser_check(parser, TOK_LPAREN)) {
         parser_advance(parser);
-        Expr *inner = parse_or(parser);
+        Expr *inner = parse_logical_or(parser);
         if (!inner) return NULL;
         if (!parser_check(parser, TOK_RPAREN)) {
             parser->error = "expected ')'";
@@ -692,8 +730,60 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint32_
         }
 
         case EXPR_BINARY: {
+            BinaryOp op = expr->data.binary.op;
             ExprResult left = expr_eval(expr->data.binary.left, symbols, anon, pc, pass, current_zone);
             if (left.error) return left;
+
+            if (op == BINARY_LAND) {
+                if (left.defined && left.value == 0) {
+                    result.value = 0;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                    break;
+                }
+
+                ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass, current_zone);
+                if (right.error) return right;
+
+                if (right.defined && right.value == 0) {
+                    result.value = 0;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                } else if (left.defined && right.defined) {
+                    result.value = (left.value != 0 && right.value != 0) ? 1 : 0;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                } else {
+                    result.defined = 0;
+                }
+                break;
+            }
+
+            if (op == BINARY_LOR) {
+                if (left.defined && left.value != 0) {
+                    result.value = 1;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                    break;
+                }
+
+                ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass, current_zone);
+                if (right.error) return right;
+
+                if (right.defined && right.value != 0) {
+                    result.value = 1;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                } else if (left.defined && right.defined) {
+                    result.value = (left.value != 0 || right.value != 0) ? 1 : 0;
+                    result.defined = 1;
+                    result.is_zeropage = 1;
+                } else {
+                    result.defined = 0;
+                }
+                break;
+            }
+
             ExprResult right = expr_eval(expr->data.binary.right, symbols, anon, pc, pass, current_zone);
             if (right.error) return right;
             result.defined = left.defined && right.defined;
@@ -701,7 +791,7 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint32_
                 break;
             }
 
-            switch (expr->data.binary.op) {
+            switch (op) {
                 case BINARY_ADD:
                     if (!checked_int32((int64_t)left.value + (int64_t)right.value, &result.value)) {
                         return expr_error("integer overflow in addition");
@@ -757,6 +847,10 @@ ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint32_
                         return expr_error("invalid shift count");
                     }
                     result.value = int32_from_u32((uint32_t)left.value >> right.value);
+                    break;
+                case BINARY_LAND:
+                case BINARY_LOR:
+                    /* Logical operators are handled before eager right-side evaluation. */
                     break;
                 case BINARY_EQ:
                     result.value = (left.value == right.value) ? 1 : 0;
@@ -862,6 +956,8 @@ static void expr_print_internal(Expr *expr, int depth) {
                 case BINARY_AND: printf("&\n"); break;
                 case BINARY_OR: printf("|\n"); break;
                 case BINARY_XOR: printf("^\n"); break;
+                case BINARY_LAND: printf("&&\n"); break;
+                case BINARY_LOR: printf("||\n"); break;
                 case BINARY_SHL: printf("<<\n"); break;
                 case BINARY_SHR: printf(">>\n"); break;
                 case BINARY_EQ: printf("=\n"); break;

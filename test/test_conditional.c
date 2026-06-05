@@ -131,6 +131,21 @@ TEST(if_comparison) {
     ASSERT(assemble_and_check(source, expected, 2));
 }
 
+TEST(if_logical_expression) {
+    /* !if with logical AND/OR expression */
+    const char *source =
+        "* = $1000\n"
+        "DEBUG = 1\n"
+        "FEATURE = 0\n"
+        "!if DEBUG && (FEATURE || 1)\n"
+        "    lda #$7F\n"
+        "!else\n"
+        "    lda #$00\n"
+        "!endif\n";
+    uint8_t expected[] = { 0xA9, 0x7F };
+    ASSERT(assemble_and_check(source, expected, 2));
+}
+
 /* ========== !if / !else Tests ========== */
 
 TEST(if_else_true_branch) {
@@ -402,6 +417,7 @@ int main(void) {
     RUN_TEST(if_expression);
     RUN_TEST(if_expression_false);
     RUN_TEST(if_comparison);
+    RUN_TEST(if_logical_expression);
 
     printf("\n!if / !else Tests:\n");
     RUN_TEST(if_else_true_branch);

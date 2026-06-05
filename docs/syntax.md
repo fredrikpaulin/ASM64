@@ -148,13 +148,15 @@ Expressions can be used anywhere a numeric value is expected.
 | `=` `<>` | Equal, not equal | 4 |
 | `&` | Bitwise AND | 3 |
 | `^` | Bitwise XOR | 2 |
-| `\|` | Bitwise OR | Lowest |
+| `\|` | Bitwise OR | 1 |
+| `&&` | Logical AND | 0 |
+| `\|\|` | Logical OR | Lowest |
 
 ### Special Values
 
 - `*` - Current program counter
 
-Expression evaluation is checked. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and a program counter value outside expression range are errors.
+Expression evaluation is checked. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and a program counter value outside expression range are errors. Logical `&&` and `||` short-circuit.
 
 `!if` conditions must be defined when evaluated. A forward-referenced symbol in `!if` is an error; use `!ifdef` or `!ifndef` when the test is about symbol existence.
 

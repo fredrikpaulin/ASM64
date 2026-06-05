@@ -11,7 +11,7 @@ ASM64 is a modern, portable cross-assembler for the MOS 6502/6510 processor, des
 - **Loop constructs** with `!for` and `!while`
 - **Pseudo-PC** for relocatable code (`!pseudopc`, `!realpc`)
 - **Automatic zero-page optimization**
-- **Expression evaluator** with full arithmetic and bitwise operators
+- **Expression evaluator** with arithmetic, bitwise, and logical operators
 - **Multiple output formats** (.PRG with load address, raw binary)
 - **Symbol and listing file generation**
 - **Include file support** with configurable search paths
@@ -263,12 +263,14 @@ value = $FF ^ $AA       ; Bitwise XOR
 value = ~$FF            ; Bitwise NOT
 value = $01 << 4        ; Left shift
 value = $80 >> 4        ; Right shift
+value = DEBUG && FAST   ; Logical AND
+value = DEBUG || FORCE  ; Logical OR
 
 low = <$1234            ; Low byte ($34)
 high = >$1234           ; High byte ($12)
 ```
 
-Expression errors fail assembly. This includes division or modulo by zero, invalid shift counts, checked arithmetic overflow, and undefined symbols in `!if` conditions.
+Expression errors fail assembly. This includes division or modulo by zero, invalid shift counts, checked arithmetic overflow, and undefined symbols in `!if` conditions. Logical `&&` and `||` short-circuit.
 
 ## Output Formats
 

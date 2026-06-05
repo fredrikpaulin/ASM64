@@ -32,6 +32,8 @@ typedef enum {
     TOK_PERCENT,        /* % (modulo, not binary prefix) */
     TOK_AMP,            /* & */
     TOK_PIPE,           /* | */
+    TOK_LAND,           /* && */
+    TOK_LOR,            /* || */
     TOK_CARET,          /* ^ */
     TOK_TILDE,          /* ~ */
     TOK_BANG,           /* ! (when not directive) */

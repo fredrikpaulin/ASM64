@@ -2,6 +2,13 @@
 
 All notable changes to ASM64 are documented in this file.
 
+## [1.0.3] 2026-06-05
+
+### Behavior Changes
+- Added `&&` and `||` logical expression operators with short-circuit evaluation.
+
+---
+
 ## [1.0.2] 2026-06-05
 
 ### Behavior Changes
