@@ -23,6 +23,21 @@
 static char *path_join(const char *dir, const char *file);
 static char *get_directory(const char *filepath);
 static char *read_file_content(const char *filename, long *size_out);
+static void macro_expansion_free(MacroExpansion *exp);
+static void loop_entry_free(LoopEntry *entry);
+
+static void cond_entry_clear(CondEntry *entry) {
+    if (!entry) return;
+    free(entry->filename);
+    memset(entry, 0, sizeof(*entry));
+}
+
+static void cond_stack_clear(Assembler *as) {
+    for (int i = 0; i < as->cond_depth; i++) {
+        cond_entry_clear(&as->cond_stack[i]);
+    }
+    as->cond_depth = 0;
+}
 
 /* ========== Assembler Lifecycle ========== */
 
@@ -93,6 +108,13 @@ void assembler_free(Assembler *as) {
     symbol_table_free(as->symbols);
     scope_free(as->scope);
     anon_free(as->anon_labels);
+    cond_stack_clear(as);
+    for (int i = 0; i < as->macro_depth; i++) {
+        macro_expansion_free(as->macro_stack[i]);
+    }
+    for (int i = 0; i < as->loop_depth; i++) {
+        loop_entry_free(as->loop_stack[i]);
+    }
     macro_table_free(as->macros);
 
     /* Free assembled lines */
@@ -168,7 +190,23 @@ void assembler_reset(Assembler *as) {
     as->include_depth = 0;
 
     /* Clear conditional stack */
-    as->cond_depth = 0;
+    cond_stack_clear(as);
+
+    for (int i = 0; i < as->macro_depth; i++) {
+        macro_expansion_free(as->macro_stack[i]);
+        as->macro_stack[i] = NULL;
+    }
+    as->macro_depth = 0;
+    as->macro_unique_counter = 0;
+    macro_table_free(as->macros);
+    as->macros = macro_table_create(64);
+
+    for (int i = 0; i < as->loop_depth; i++) {
+        loop_entry_free(as->loop_stack[i]);
+        as->loop_stack[i] = NULL;
+    }
+    as->loop_depth = 0;
+    as->cpu_type = CPU_6510;
 
     /* Re-apply command-line defined symbols */
     for (int i = 0; i < as->cmdline_define_count; i++) {
@@ -253,13 +291,20 @@ int assembler_warning_count(Assembler *as) {
 
 void assembler_emit_byte(Assembler *as, uint8_t byte) {
     /* Use real_pc for actual output position when in pseudopc mode */
-    uint16_t output_addr = as->in_pseudopc ? as->real_pc : as->pc;
+    uint32_t output_addr = as->in_pseudopc ? as->real_pc : as->pc;
+
+    if (output_addr > 0xFFFF) {
+        assembler_error(as, "program counter exceeded 64K address space at $%X", output_addr);
+        as->pc++;
+        as->real_pc++;
+        return;
+    }
 
     if (output_addr < as->lowest_addr) as->lowest_addr = output_addr;
     if (output_addr > as->highest_addr) as->highest_addr = output_addr;
 
-    as->memory[output_addr] = byte;
-    as->written[output_addr] = 1;
+    as->memory[(uint16_t)output_addr] = byte;
+    as->written[(uint16_t)output_addr] = 1;
 
     /* Advance pc (virtual address for labels) */
     as->pc++;
@@ -281,7 +326,28 @@ void assembler_emit_bytes(Assembler *as, const uint8_t *bytes, int count) {
     }
 }
 
-void assembler_set_pc(Assembler *as, uint16_t pc) {
+static int pc_span_exceeds_64k(uint32_t start, uint32_t count, uint32_t *span_end) {
+    if (count == 0) {
+        if (span_end) *span_end = start;
+        return start > 0xFFFF;
+    }
+
+    if (start > 0xFFFF) {
+        if (span_end) *span_end = start;
+        return 1;
+    }
+
+    if (count - 1 > UINT32_MAX - start) {
+        if (span_end) *span_end = UINT32_MAX;
+        return 1;
+    }
+
+    uint32_t end = start + count - 1;
+    if (span_end) *span_end = end;
+    return end > 0xFFFF;
+}
+
+void assembler_set_pc(Assembler *as, uint32_t pc) {
     as->pc = pc;
     /* Also set real_pc if not in pseudopc mode */
     if (!as->in_pseudopc) {
@@ -292,7 +358,7 @@ void assembler_set_pc(Assembler *as, uint16_t pc) {
     }
 }
 
-uint16_t assembler_get_pc(Assembler *as) {
+uint32_t assembler_get_pc(Assembler *as) {
     return as->pc;
 }
 
@@ -300,6 +366,12 @@ uint16_t assembler_get_pc(Assembler *as) {
  * Use this in pass 1 where we don't actually emit bytes but need to track sizes.
  * In pass 2, use assembler_emit_byte which handles both. */
 static void assembler_advance_pc(Assembler *as, int count) {
+    uint32_t output_addr = as->in_pseudopc ? as->real_pc : as->pc;
+    uint32_t span_end = output_addr;
+    if (count > 0 && pc_span_exceeds_64k(output_addr, (uint32_t)count, &span_end)) {
+        assembler_error(as, "program counter exceeded 64K address space at $%X",
+                        span_end);
+    }
     as->pc += count;
     /* Also advance real_pc to track actual output position */
     as->real_pc += count;
@@ -307,7 +379,7 @@ static void assembler_advance_pc(Assembler *as, int count) {
 
 /* ========== Utility Functions ========== */
 
-int assembler_calc_branch_offset(uint16_t target, uint16_t pc) {
+int assembler_calc_branch_offset(uint32_t target, uint32_t pc) {
     /* Branch is relative to the address AFTER the branch instruction (pc + 2) */
     int32_t offset = (int32_t)target - (int32_t)(pc + 2);
 
@@ -322,9 +394,28 @@ int assembler_is_zeropage(int32_t addr) {
     return addr >= 0 && addr <= 0xFF;
 }
 
+static int assembler_check_expr(Assembler *as, ExprResult result, const char *context) {
+    if (!result.error) return 0;
+    if (context && *context) {
+        assembler_error(as, "%s: %s", context, result.error_msg ? result.error_msg : "expression error");
+    } else {
+        assembler_error(as, "%s", result.error_msg ? result.error_msg : "expression error");
+    }
+    return -1;
+}
+
+static int assembler_check_address(Assembler *as, int32_t value, const char *context, uint32_t *out) {
+    if (value < 0 || value > 0xFFFF) {
+        assembler_error(as, "%s out of range ($%X)", context ? context : "address", value);
+        return -1;
+    }
+    *out = (uint32_t)value;
+    return 0;
+}
+
 /* ========== Line Storage ========== */
 
-static int add_assembled_line(Assembler *as, Statement *stmt, uint16_t address,
+static int add_assembled_line(Assembler *as, Statement *stmt, uint32_t address,
                               const char *source_text) {
     if (as->line_count >= as->line_capacity) {
         int new_capacity = as->line_capacity ? as->line_capacity * 2 : 256;
@@ -357,6 +448,11 @@ static int add_assembled_line(Assembler *as, Statement *stmt, uint16_t address,
 
 static void define_label(Assembler *as, LabelInfo *label) {
     if (!label) return;
+
+    if (as->pc > 0xFFFF) {
+        assembler_error(as, "label address exceeded 64K address space at $%X", as->pc);
+        return;
+    }
 
     uint8_t flags = SYM_DEFINED;
     if (assembler_is_zeropage(as->pc)) {
@@ -391,6 +487,8 @@ static void define_label(Assembler *as, LabelInfo *label) {
             symbol_define(as->symbols, mangled, as->pc, flags,
                          as->current_file, as->current_line);
             free(mangled);
+        } else {
+            assembler_error(as, "out of memory defining local label");
         }
     } else {
         /* Global label - also starts a new zone for local labels */
@@ -400,6 +498,9 @@ static void define_label(Assembler *as, LabelInfo *label) {
         /* Update current zone to this label's name */
         free(as->current_zone);
         as->current_zone = strdup(label->name);
+        if (!as->current_zone) {
+            assembler_error(as, "out of memory updating label zone");
+        }
     }
 }
 
@@ -407,6 +508,11 @@ static void define_label(Assembler *as, LabelInfo *label) {
 
 int assembler_assemble_instruction(Assembler *as, Statement *stmt) {
     InstructionInfo *info = &stmt->data.instruction;
+
+    if (!assembler_opcode_valid_for_cpu(as, info->opcode)) {
+        assembler_error(as, "opcode %s is not valid for selected CPU", info->mnemonic);
+        return -1;
+    }
 
     /* Accumulator and implied modes don't need operand evaluation */
     if (info->mode == ADDR_ACCUMULATOR || info->mode == ADDR_IMPLIED) {
@@ -424,6 +530,9 @@ int assembler_assemble_instruction(Assembler *as, Statement *stmt) {
 
     if (info->operand) {
         ExprResult result = expr_eval(info->operand, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, result, "invalid operand expression") < 0) {
+            return -1;
+        }
         operand_value = result.value;
         value_defined = result.defined;
 
@@ -488,6 +597,11 @@ int assembler_assemble_instruction(Assembler *as, Statement *stmt) {
         }
     }
 
+    if (!assembler_opcode_valid_for_cpu(as, info->opcode)) {
+        assembler_error(as, "opcode %s is not valid for selected CPU", info->mnemonic);
+        return -1;
+    }
+
     /* Emit the instruction */
     if (as->pass == 2) {
         assembler_emit_byte(as, info->opcode);
@@ -525,6 +639,9 @@ static int assemble_byte_directive(Assembler *as, Statement *stmt) {
 
     for (int i = 0; i < dir->arg_count; i++) {
         ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, result, "invalid !byte expression") < 0) {
+            return -1;
+        }
         if (as->pass == 2 && !result.defined) {
             assembler_error(as, "undefined symbol in !byte directive");
             return -1;
@@ -548,6 +665,9 @@ static int assemble_word_directive(Assembler *as, Statement *stmt) {
 
     for (int i = 0; i < dir->arg_count; i++) {
         ExprResult result = expr_eval(dir->args[i], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, result, "invalid !word expression") < 0) {
+            return -1;
+        }
         if (as->pass == 2 && !result.defined) {
             assembler_error(as, "undefined symbol in !word directive");
             return -1;
@@ -590,6 +710,9 @@ static int assemble_fill_directive(Assembler *as, Statement *stmt) {
     }
 
     ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+    if (assembler_check_expr(as, count_result, "invalid !fill count") < 0) {
+        return -1;
+    }
     if (!count_result.defined) {
         assembler_error(as, "!fill count must be constant");
         return -1;
@@ -604,6 +727,9 @@ static int assemble_fill_directive(Assembler *as, Statement *stmt) {
     uint8_t fill_value = 0;
     if (dir->arg_count >= 2) {
         ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, value_result, "invalid !fill value") < 0) {
+            return -1;
+        }
         if (as->pass == 2 && !value_result.defined) {
             assembler_error(as, "!fill value must be defined");
             return -1;
@@ -631,12 +757,18 @@ static int assemble_org_directive(Assembler *as, Statement *stmt) {
     }
 
     ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+    if (assembler_check_expr(as, result, "invalid org address") < 0) {
+        return -1;
+    }
     if (!result.defined) {
         assembler_error(as, "org address must be constant");
         return -1;
     }
 
-    uint16_t new_pc = result.value & 0xFFFF;
+    uint32_t new_pc;
+    if (assembler_check_address(as, result.value, "org address", &new_pc) < 0) {
+        return -1;
+    }
     assembler_set_pc(as, new_pc);
 
     return 0;
@@ -843,6 +975,9 @@ static int assemble_skip_directive(Assembler *as, Statement *stmt) {
     }
 
     ExprResult count_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+    if (assembler_check_expr(as, count_result, "invalid !skip count") < 0) {
+        return -1;
+    }
     if (!count_result.defined) {
         assembler_error(as, "!skip count must be constant");
         return -1;
@@ -869,6 +1004,9 @@ static int assemble_align_directive(Assembler *as, Statement *stmt) {
     }
 
     ExprResult align_result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+    if (assembler_check_expr(as, align_result, "invalid !align value") < 0) {
+        return -1;
+    }
     if (!align_result.defined) {
         assembler_error(as, "!align value must be constant");
         return -1;
@@ -893,6 +1031,9 @@ static int assemble_align_directive(Assembler *as, Statement *stmt) {
     uint8_t fill_value = 0;
     if (dir->arg_count >= 2) {
         ExprResult value_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, value_result, "invalid !align fill value") < 0) {
+            return -1;
+        }
         if (as->pass == 2 && !value_result.defined) {
             assembler_error(as, "!align fill value must be defined");
             return -1;
@@ -924,6 +1065,9 @@ static int assemble_binary_directive(Assembler *as, Statement *stmt) {
 
     if (dir->arg_count >= 1) {
         ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, r, "invalid !binary size") < 0) {
+            return -1;
+        }
         if (!r.defined) {
             assembler_error(as, "!binary size must be constant");
             return -1;
@@ -933,6 +1077,9 @@ static int assemble_binary_directive(Assembler *as, Statement *stmt) {
 
     if (dir->arg_count >= 2) {
         ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, r, "invalid !binary offset") < 0) {
+            return -1;
+        }
         if (!r.defined) {
             assembler_error(as, "!binary offset must be constant");
             return -1;
@@ -969,6 +1116,9 @@ static int assemble_basic_directive(Assembler *as, Statement *stmt) {
     /* Parse optional arguments */
     if (dir->arg_count >= 1) {
         ExprResult r = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, r, "invalid !basic line number") < 0) {
+            return -1;
+        }
         if (!r.defined && as->pass == 2) {
             assembler_error(as, "!basic line number must be constant");
             return -1;
@@ -978,6 +1128,9 @@ static int assemble_basic_directive(Assembler *as, Statement *stmt) {
 
     if (dir->arg_count >= 2) {
         ExprResult r = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, r, "invalid !basic SYS address") < 0) {
+            return -1;
+        }
         if (!r.defined && as->pass == 2) {
             assembler_error(as, "!basic SYS address must be constant");
             return -1;
@@ -1130,11 +1283,18 @@ int assembler_assemble_directive(Assembler *as, Statement *stmt) {
             return -1;
         }
         ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, result, "invalid !pseudopc address") < 0) {
+            return -1;
+        }
         if (!result.defined) {
             assembler_error(as, "!pseudopc address must be a defined value");
             return -1;
         }
-        return assembler_pseudopc_start(as, (uint16_t)result.value);
+        uint32_t pseudo_addr;
+        if (assembler_check_address(as, result.value, "!pseudopc address", &pseudo_addr) < 0) {
+            return -1;
+        }
+        return assembler_pseudopc_start(as, pseudo_addr);
     }
 
     /* End pseudo-PC mode */
@@ -1219,8 +1379,8 @@ int assembler_assemble_directive(Assembler *as, Statement *stmt) {
     }
 
     /* Unknown directive */
-    assembler_warning(as, "unknown directive !%s ignored", name);
-    return 0;
+    assembler_error(as, "unknown directive !%s", name);
+    return -1;
 }
 
 /* ========== Assignment Assembly ========== */
@@ -1229,6 +1389,9 @@ static int assemble_assignment(Assembler *as, Statement *stmt) {
     AssignmentInfo *assign = &stmt->data.assignment;
 
     ExprResult result = expr_eval(assign->value, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+    if (assembler_check_expr(as, result, "invalid assignment expression") < 0) {
+        return -1;
+    }
 
     /* Determine flags for the symbol definition:
      * - In pass 1 outside loops: SYM_CONSTANT (traditional behavior)
@@ -1244,8 +1407,12 @@ static int assemble_assignment(Assembler *as, Statement *stmt) {
         flags |= SYM_ZEROPAGE;
     }
 
-    symbol_define(as->symbols, assign->name, result.value, flags,
-                 as->current_file, as->current_line);
+    Symbol *sym = symbol_define(as->symbols, assign->name, result.value, flags,
+                                as->current_file, as->current_line);
+    if (!sym) {
+        assembler_error(as, "failed to define symbol '%s'", assign->name);
+        return -1;
+    }
 
     return 0;
 }
@@ -1350,6 +1517,37 @@ static const char *find_line_end(const char *pos) {
     }
     if (*pos == '\n') pos++;  /* Include the newline */
     return pos;
+}
+
+static char *copy_trimmed_source_line(const char *line_start) {
+    if (!line_start) return NULL;
+
+    while (*line_start == ' ' || *line_start == '\t') {
+        line_start++;
+    }
+
+    const char *line_end = line_start;
+    while (*line_end && *line_end != '\n') {
+        line_end++;
+    }
+
+    while (line_end > line_start &&
+           (line_end[-1] == ' ' || line_end[-1] == '\t' || line_end[-1] == '\r')) {
+        line_end--;
+    }
+
+    size_t line_len = (size_t)(line_end - line_start);
+    if (line_len == 0) {
+        return NULL;
+    }
+
+    char *source_line = malloc(line_len + 1);
+    if (!source_line) {
+        return NULL;
+    }
+    memcpy(source_line, line_start, line_len);
+    source_line[line_len] = '\0';
+    return source_line;
 }
 
 /* Collect macro body until matching } or !endmacro */
@@ -1556,6 +1754,10 @@ static int process_loop_directive(Assembler *as, Statement *stmt, Lexer *lexer, 
         /* Evaluate start and end */
         ExprResult start_result = expr_eval(dir->args[1], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
         ExprResult end_result = expr_eval(dir->args[2], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, start_result, "invalid !for start") < 0 ||
+            assembler_check_expr(as, end_result, "invalid !for end") < 0) {
+            return -1;
+        }
 
         if (!start_result.defined || !end_result.defined) {
             assembler_error(as, "!for start and end must be defined values");
@@ -1612,8 +1814,15 @@ static int process_conditional_directive(Assembler *as, Statement *stmt) {
             return -1;
         }
         ExprResult result = expr_eval(dir->args[0], as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
-        /* In pass 1, treat undefined as false for forward refs */
-        int condition = result.defined ? result.value : 0;
+        if (assembler_check_expr(as, result, "invalid !if condition") < 0) {
+            assembler_cond_if(as, 0);
+            return -1;
+        }
+        if (!result.defined) {
+            assembler_error(as, "!if condition must be defined");
+            return assembler_cond_if(as, 0);
+        }
+        int condition = result.value;
         return assembler_cond_if(as, condition);
     }
     else if (strcmp(name, "ifdef") == 0) {
@@ -1692,6 +1901,12 @@ int assembler_include_file(Assembler *as, const char *filename) {
     /* Push onto include stack */
     IncludeEntry *entry = &as->include_stack[as->include_depth];
     entry->filename = strdup(as->current_file ? as->current_file : "<input>");
+    if (!entry->filename) {
+        assembler_error(as, "out of memory");
+        free(content);
+        free(path);
+        return -1;
+    }
     entry->line_number = as->current_line;
     entry->source = NULL; /* Will be freed by caller */
     as->include_depth++;
@@ -1730,45 +1945,19 @@ static int assembler_pass1_internal(Assembler *as, const char *source, const cha
 
     /* Parse and process all lines */
     while (1) {
-        uint16_t line_pc = as->pc;
+        uint32_t line_pc = as->pc;
+        const char *line_start_for_listing = lexer.line_start;
 
         Statement *stmt = parser_parse_line(&parser);
         if (!stmt) {
             break;
         }
 
-        /* Capture source line for listings by finding it in the source buffer */
-        char *source_line = NULL;
-        if (stmt->line > 0) {
-            /* Find the line in source */
-            const char *p = source;
-            int current_line = 1;
-            while (*p && current_line < stmt->line) {
-                if (*p == '\n') current_line++;
-                p++;
-            }
-            /* p now points to start of the line */
-            const char *line_start = p;
-            while (*line_start == ' ' || *line_start == '\t') line_start++;
-            const char *line_end = line_start;
-            while (*line_end && *line_end != '\n') line_end++;
-            int line_len = (int)(line_end - line_start);
-            /* Strip trailing whitespace */
-            while (line_len > 0 && (line_start[line_len-1] == ' ' ||
-                   line_start[line_len-1] == '\t' || line_start[line_len-1] == '\r')) {
-                line_len--;
-            }
-            if (line_len > 0) {
-                source_line = malloc(line_len + 1);
-                if (source_line) {
-                    memcpy(source_line, line_start, line_len);
-                    source_line[line_len] = '\0';
-                }
-            }
-        }
+        char *source_line = copy_trimmed_source_line(line_start_for_listing);
 
         /* Update parser PC for expression evaluation */
         parser_set_pc(&parser, as->pc);
+        as->current_file = stmt->file;
         as->current_line = stmt->line;
 
         /* Conditional directives are ALWAYS processed, even in inactive blocks */
@@ -1856,6 +2045,7 @@ static int assembler_pass1_internal(Assembler *as, const char *source, const cha
         assembler_error(as, "unterminated !if (started at %s:%d)",
                        entry->filename ? entry->filename : "<input>",
                        entry->line_number);
+        cond_stack_clear(as);
     }
 
     return as->errors > 0 ? -1 : 0;
@@ -1873,6 +2063,7 @@ int assembler_pass2(Assembler *as) {
     as->pc = as->org;
     as->real_pc = as->org;
     as->in_pseudopc = 0;
+    as->cpu_type = CPU_6510;
 
     /* Reset zone tracking for pass 2 */
     free(as->current_zone);
@@ -1889,20 +2080,21 @@ int assembler_pass2(Assembler *as) {
         AssembledLine *line = &as->lines[i];
         Statement *stmt = line->stmt;
 
+        as->current_file = stmt->file;
         as->current_line = stmt->line;
         /* Restore PC to stored address for symbol resolution
          * The real_pc tracks actual output position separately when in pseudopc */
         as->pc = line->address;
-        uint16_t start_pc = as->in_pseudopc ? as->real_pc : as->pc;
+        uint32_t start_pc = as->in_pseudopc ? as->real_pc : as->pc;
 
         /* Restore zone for local label resolution */
         free(as->current_zone);
         as->current_zone = line->zone ? str_dup(line->zone) : NULL;
 
-        /* Re-define labels for anonymous label tracking */
+        /* Advance/rebuild anonymous label tracking as pass 2 reaches labels. */
         if (stmt->label) {
             if (stmt->label->is_anon_fwd) {
-                anon_define_forward(as->anon_labels, as->pc, as->current_file, stmt->line);
+                anon_advance_forward(as->anon_labels);
             } else if (stmt->label->is_anon_back) {
                 anon_define_backward(as->anon_labels, as->pc, as->current_file, stmt->line);
             }
@@ -1913,18 +2105,22 @@ int assembler_pass2(Assembler *as) {
         }
 
         /* Capture generated bytes for listing */
-        uint16_t end_pc = as->in_pseudopc ? as->real_pc : as->pc;
-        int byte_count = end_pc - start_pc;
+        uint32_t end_pc = as->in_pseudopc ? as->real_pc : as->pc;
+        uint32_t byte_count = (end_pc >= start_pc) ? (end_pc - start_pc) : 0;
         if (byte_count > 0 && byte_count <= 8) {
-            line->byte_count = byte_count;
-            for (int j = 0; j < byte_count; j++) {
-                line->bytes[j] = as->memory[start_pc + j];
+            line->byte_count = (int)byte_count;
+            for (uint32_t j = 0; j < byte_count; j++) {
+                if (start_pc + j <= 0xFFFF) {
+                    line->bytes[j] = as->memory[(uint16_t)(start_pc + j)];
+                }
             }
         } else if (byte_count > 8) {
             /* For long data, just show first 8 bytes */
             line->byte_count = 8;
             for (int j = 0; j < 8; j++) {
-                line->bytes[j] = as->memory[start_pc + j];
+                if (start_pc + (uint32_t)j <= 0xFFFF) {
+                    line->bytes[j] = as->memory[(uint16_t)(start_pc + (uint32_t)j)];
+                }
             }
         }
 
@@ -1976,7 +2172,7 @@ int assembler_assemble_string(Assembler *as, const char *source, const char *fil
         int code_size = (as->highest_addr >= as->lowest_addr) ?
                         (as->highest_addr - as->lowest_addr + 1) : 0;
         fprintf(stderr, "Pass 2: Generated %d bytes ($%04X-$%04X)\n",
-                code_size, as->lowest_addr, as->highest_addr);
+                code_size, (unsigned)as->lowest_addr, (unsigned)as->highest_addr);
     }
 
     return as->errors;
@@ -1990,26 +2186,50 @@ int assembler_assemble_file(Assembler *as, const char *filename) {
     }
 
     /* Get file size */
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        assembler_error(as, "cannot seek file: %s", filename);
+        return -1;
+    }
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
     if (size < 0) {
         fclose(f);
         assembler_error(as, "cannot determine file size: %s", filename);
         return -1;
     }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        assembler_error(as, "cannot rewind file: %s", filename);
+        return -1;
+    }
 
     /* Read entire file */
-    char *source = malloc(size + 1);
+    char *source = malloc((size_t)size + 1);
     if (!source) {
         fclose(f);
         assembler_error(as, "out of memory reading file");
         return -1;
     }
 
-    size_t read = fread(source, 1, size, f);
-    fclose(f);
+    size_t expected = (size_t)size;
+    size_t read = fread(source, 1, expected, f);
+    if (read != expected) {
+        assembler_error(as, "partial read from file: %s", filename);
+        free(source);
+        fclose(f);
+        return -1;
+    }
+    if (ferror(f)) {
+        assembler_error(as, "error reading file: %s", filename);
+        free(source);
+        fclose(f);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        assembler_error(as, "error closing file: %s", filename);
+        free(source);
+        return -1;
+    }
     source[read] = '\0';
 
     int result = assembler_assemble_string(as, source, filename);
@@ -2023,14 +2243,14 @@ int assembler_assemble_file(Assembler *as, const char *filename) {
 const uint8_t *assembler_get_output(Assembler *as, uint16_t *start_addr, int *size) {
     if (as->lowest_addr > as->highest_addr) {
         /* No output */
-        *start_addr = as->org;
+        *start_addr = (uint16_t)as->org;
         *size = 0;
         return as->memory;
     }
 
-    *start_addr = as->lowest_addr;
-    *size = as->highest_addr - as->lowest_addr + 1;
-    return &as->memory[as->lowest_addr];
+    *start_addr = (uint16_t)as->lowest_addr;
+    *size = (int)(as->highest_addr - as->lowest_addr + 1);
+    return &as->memory[(uint16_t)as->lowest_addr];
 }
 
 int assembler_write_output(Assembler *as, const char *filename) {
@@ -2050,14 +2270,25 @@ int assembler_write_output(Assembler *as, const char *filename) {
         uint8_t header[2];
         header[0] = as->lowest_addr & 0xFF;
         header[1] = (as->lowest_addr >> 8) & 0xFF;
-        fwrite(header, 1, 2, f);
+        if (fwrite(header, 1, 2, f) != 2) {
+            assembler_error(as, "failed writing output header: %s", filename);
+            fclose(f);
+            return -1;
+        }
     }
 
     /* Write code */
-    int size = as->highest_addr - as->lowest_addr + 1;
-    fwrite(&as->memory[as->lowest_addr], 1, size, f);
+    size_t size = (size_t)(as->highest_addr - as->lowest_addr + 1);
+    if (fwrite(&as->memory[(uint16_t)as->lowest_addr], 1, size, f) != size) {
+        assembler_error(as, "failed writing output file: %s", filename);
+        fclose(f);
+        return -1;
+    }
 
-    fclose(f);
+    if (fclose(f) != 0) {
+        assembler_error(as, "error closing output file: %s", filename);
+        return -1;
+    }
     return 0;
 }
 
@@ -2068,7 +2299,14 @@ int assembler_write_symbols(Assembler *as, const char *filename) {
         return -1;
     }
     int result = symbol_write_vice(as->symbols, fp);
-    fclose(fp);
+    if (ferror(fp)) {
+        assembler_error(as, "failed writing symbol file: %s", filename);
+        result = -1;
+    }
+    if (fclose(fp) != 0) {
+        assembler_error(as, "error closing symbol file: %s", filename);
+        result = -1;
+    }
     return result;
 }
 
@@ -2188,9 +2426,16 @@ int assembler_write_listing(Assembler *as, const char *filename) {
     /* Write symbol table summary */
     fprintf(fp, "\n; Symbol Table\n");
     fprintf(fp, "; ------------\n");
-    symbol_write_vice(as->symbols, fp);
+    if (symbol_write_vice(as->symbols, fp) < 0 || ferror(fp)) {
+        assembler_error(as, "failed writing listing file: %s", filename);
+        fclose(fp);
+        return -1;
+    }
 
-    fclose(fp);
+    if (fclose(fp) != 0) {
+        assembler_error(as, "error closing listing file: %s", filename);
+        return -1;
+    }
     return 0;
 }
 
@@ -2349,9 +2594,19 @@ static char *read_file_content(const char *filename, long *size_out) {
     FILE *f = fopen(filename, "r");
     if (!f) return NULL;
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
+    if (size < 0) {
+        fclose(f);
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
 
     char *content = malloc(size + 1);
     if (!content) {
@@ -2359,8 +2614,17 @@ static char *read_file_content(const char *filename, long *size_out) {
         return NULL;
     }
 
-    size_t read = fread(content, 1, size, f);
-    fclose(f);
+    size_t expected = (size_t)size;
+    size_t read = fread(content, 1, expected, f);
+    if (read != expected || ferror(f)) {
+        free(content);
+        fclose(f);
+        return NULL;
+    }
+    if (fclose(f) != 0) {
+        free(content);
+        return NULL;
+    }
     content[read] = '\0';
 
     if (size_out) *size_out = read;
@@ -2412,7 +2676,12 @@ int assembler_include_binary(Assembler *as, const char *filename,
     }
 
     /* Get file size */
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        assembler_error(as, "cannot seek binary file: %s", path);
+        fclose(f);
+        free(path);
+        return -1;
+    }
     long file_size = ftell(f);
 
     if (file_size < 0) {
@@ -2432,20 +2701,43 @@ int assembler_include_binary(Assembler *as, const char *filename,
     /* Calculate read length */
     int read_len = length;
     if (read_len <= 0) {
-        read_len = file_size - offset;
+        read_len = (int)(file_size - offset);
     }
     if (offset + read_len > file_size) {
-        read_len = file_size - offset;
+        assembler_error(as, "binary span %d+%d out of range (file size %ld)", offset, read_len, file_size);
+        fclose(f);
+        free(path);
+        return -1;
     }
 
     if (read_len <= 0) {
-        fclose(f);
+        if (fclose(f) != 0) {
+            assembler_error(as, "error closing binary file: %s", path);
+            free(path);
+            return -1;
+        }
         free(path);
         return 0; /* Nothing to read */
     }
 
+    if (as->pass != 2) {
+        if (fclose(f) != 0) {
+            assembler_error(as, "error closing binary file: %s", path);
+            free(path);
+            return -1;
+        }
+        free(path);
+        assembler_advance_pc(as, read_len);
+        return 0;
+    }
+
     /* Seek to offset and read */
-    fseek(f, offset, SEEK_SET);
+    if (fseek(f, offset, SEEK_SET) != 0) {
+        assembler_error(as, "cannot seek binary file: %s", path);
+        fclose(f);
+        free(path);
+        return -1;
+    }
     uint8_t *buffer = malloc(read_len);
     if (!buffer) {
         assembler_error(as, "out of memory reading binary file");
@@ -2455,15 +2747,23 @@ int assembler_include_binary(Assembler *as, const char *filename,
     }
 
     size_t actual = fread(buffer, 1, read_len, f);
-    fclose(f);
+    if (actual != (size_t)read_len || ferror(f)) {
+        assembler_error(as, "partial read from binary file: %s", path);
+        free(buffer);
+        fclose(f);
+        free(path);
+        return -1;
+    }
+    if (fclose(f) != 0) {
+        assembler_error(as, "error closing binary file: %s", path);
+        free(buffer);
+        free(path);
+        return -1;
+    }
     free(path);
 
     /* Emit bytes */
-    if (as->pass == 2) {
-        assembler_emit_bytes(as, buffer, actual);
-    } else {
-        assembler_advance_pc(as, actual);
-    }
+    assembler_emit_bytes(as, buffer, (int)actual);
 
     free(buffer);
     return 0;
@@ -2486,7 +2786,11 @@ int assembler_cond_if(Assembler *as, int condition) {
     entry->parent_active = assembler_is_active(as);
     entry->active = entry->parent_active && (condition != 0);
     entry->else_seen = 0;
-    entry->filename = as->current_file;
+    entry->filename = str_dup(as->current_file ? as->current_file : "<input>");
+    if (!entry->filename) {
+        assembler_error(as, "out of memory");
+        return -1;
+    }
     entry->line_number = as->current_line;
 
     as->cond_depth++;
@@ -2536,6 +2840,7 @@ int assembler_cond_endif(Assembler *as) {
     }
 
     as->cond_depth--;
+    cond_entry_clear(&as->cond_stack[as->cond_depth]);
     return 0;
 }
 
@@ -2592,6 +2897,15 @@ void macro_table_free(MacroTable *table) {
     free(table);
 }
 
+static void macro_expansion_free(MacroExpansion *exp) {
+    if (!exp) return;
+    for (int i = 0; i < exp->arg_count; i++) {
+        free(exp->arg_values[i]);
+    }
+    free(exp->arg_values);
+    free(exp);
+}
+
 Macro *macro_lookup(MacroTable *table, const char *name) {
     if (!table || !name) return NULL;
 
@@ -2610,6 +2924,10 @@ Macro *macro_lookup(MacroTable *table, const char *name) {
 int macro_define(Assembler *as, const char *name, char **params, int param_count,
                  const char *body, const char *filename, int line_number) {
     MacroTable *table = as->macros;
+    if (!table) {
+        assembler_error(as, "macro table is unavailable");
+        return -1;
+    }
 
     /* Check for duplicate */
     if (macro_lookup(table, name)) {
@@ -2618,25 +2936,44 @@ int macro_define(Assembler *as, const char *name, char **params, int param_count
     }
 
     Macro *macro = calloc(1, sizeof(Macro));
-    if (!macro) return -1;
+    if (!macro) {
+        assembler_error(as, "out of memory defining macro");
+        return -1;
+    }
 
     macro->name = strdup(name);
     macro->param_count = param_count;
     macro->filename = filename;
     macro->line_number = line_number;
+    if (!macro->name) {
+        assembler_error(as, "out of memory defining macro");
+        macro_free(macro);
+        return -1;
+    }
 
     if (param_count > 0) {
         macro->params = calloc(param_count, sizeof(char *));
         if (!macro->params) {
+            assembler_error(as, "out of memory defining macro");
             macro_free(macro);
             return -1;
         }
         for (int i = 0; i < param_count; i++) {
             macro->params[i] = strdup(params[i]);
+            if (!macro->params[i]) {
+                assembler_error(as, "out of memory defining macro");
+                macro_free(macro);
+                return -1;
+            }
         }
     }
 
     macro->body = strdup(body ? body : "");
+    if (!macro->body) {
+        assembler_error(as, "out of memory defining macro");
+        macro_free(macro);
+        return -1;
+    }
 
     /* Insert into table */
     unsigned int idx = macro_hash(name) % table->bucket_count;
@@ -2738,7 +3075,10 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
 
     /* Create expansion context */
     MacroExpansion *exp = calloc(1, sizeof(MacroExpansion));
-    if (!exp) return -1;
+    if (!exp) {
+        assembler_error(as, "out of memory expanding macro");
+        return -1;
+    }
 
     exp->name = name;
     exp->arg_count = arg_count;
@@ -2746,8 +3086,18 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
 
     if (arg_count > 0) {
         exp->arg_values = calloc(arg_count, sizeof(char *));
+        if (!exp->arg_values) {
+            assembler_error(as, "out of memory expanding macro");
+            macro_expansion_free(exp);
+            return -1;
+        }
         for (int i = 0; i < arg_count; i++) {
             exp->arg_values[i] = strdup(args[i]);
+            if (!exp->arg_values[i]) {
+                assembler_error(as, "out of memory expanding macro");
+                macro_expansion_free(exp);
+                return -1;
+            }
         }
     }
 
@@ -2758,9 +3108,9 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
     char *expanded = macro_substitute(macro->body, macro, args, arg_count, exp->unique_id);
     if (!expanded) {
         as->macro_depth--;
-        for (int i = 0; i < arg_count; i++) free(exp->arg_values[i]);
-        free(exp->arg_values);
-        free(exp);
+        as->macro_stack[as->macro_depth] = NULL;
+        assembler_error(as, "out of memory expanding macro");
+        macro_expansion_free(exp);
         return -1;
     }
 
@@ -2774,6 +3124,15 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
     char macro_zone[64];
     snprintf(macro_zone, sizeof(macro_zone), "_macro_%d", exp->unique_id);
     as->current_zone = strdup(macro_zone);
+    if (!as->current_zone) {
+        as->macro_depth--;
+        as->macro_stack[as->macro_depth] = NULL;
+        as->current_zone = saved_zone;
+        free(expanded);
+        assembler_error(as, "out of memory expanding macro");
+        macro_expansion_free(exp);
+        return -1;
+    }
 
     /* Create a pseudo-filename for error messages */
     char macro_file[256];
@@ -2845,11 +3204,8 @@ int macro_expand(Assembler *as, const char *name, char **args, int arg_count) {
 
     /* Pop expansion context */
     as->macro_depth--;
-    for (int i = 0; i < exp->arg_count; i++) {
-        free(exp->arg_values[i]);
-    }
-    free(exp->arg_values);
-    free(exp);
+    as->macro_stack[as->macro_depth] = NULL;
+    macro_expansion_free(exp);
 
     return 0;
 }
@@ -3031,8 +3387,12 @@ int assembler_loop_for(Assembler *as, const char *var_name,
         }
 
         /* Also define the variable as a symbol for expressions */
-        symbol_define(as->symbols, var_name, i, SYM_DEFINED,
-                      as->current_file, as->current_line);
+        if (!symbol_define(as->symbols, var_name, i, SYM_DEFINED,
+                           as->current_file, as->current_line)) {
+            free(expanded);
+            assembler_error(as, "failed to define loop variable '%s'", var_name);
+            return -1;
+        }
 
         /* Create a temporary loop entry for tracking */
         LoopEntry *entry = calloc(1, sizeof(LoopEntry));
@@ -3042,6 +3402,12 @@ int assembler_loop_for(Assembler *as, const char *var_name,
         }
         entry->type = LOOP_FOR;
         entry->var_name = strdup(var_name);
+        if (!entry->var_name) {
+            free(expanded);
+            free(entry);
+            assembler_error(as, "out of memory in loop expansion");
+            return -1;
+        }
         entry->current = i;
         entry->end = end;
         entry->step = step;
@@ -3073,13 +3439,21 @@ int assembler_loop_while(Assembler *as, Expr *condition, const char *body) {
 
     /* Create loop entry */
     LoopEntry *entry = calloc(1, sizeof(LoopEntry));
-    if (!entry) return -1;
+    if (!entry) {
+        assembler_error(as, "out of memory in loop expansion");
+        return -1;
+    }
 
     entry->type = LOOP_WHILE;
     entry->condition = expr_clone(condition);
     entry->body = strdup(body);
     entry->filename = as->current_file;
     entry->line_number = as->current_line;
+    if (!entry->condition || !entry->body) {
+        assembler_error(as, "out of memory in loop expansion");
+        loop_entry_free(entry);
+        return -1;
+    }
 
     as->loop_stack[as->loop_depth++] = entry;
 
@@ -3090,6 +3464,9 @@ int assembler_loop_while(Assembler *as, Expr *condition, const char *body) {
     while (iterations < max_iterations) {
         /* Evaluate condition */
         ExprResult result = expr_eval(entry->condition, as->symbols, as->anon_labels, as->pc, as->pass, as->current_zone);
+        if (assembler_check_expr(as, result, "invalid !while condition") < 0) {
+            break;
+        }
         if (!result.defined) {
             assembler_error(as, "undefined symbol in !while condition");
             break;
@@ -3134,7 +3511,7 @@ int32_t assembler_loop_var_value(Assembler *as, const char *var_name) {
 
 /* ========== Pseudo-PC Functions ========== */
 
-int assembler_pseudopc_start(Assembler *as, uint16_t pseudo_addr) {
+int assembler_pseudopc_start(Assembler *as, uint32_t pseudo_addr) {
     if (as->in_pseudopc) {
         assembler_error(as, "nested !pseudopc not allowed");
         return -1;
@@ -3168,7 +3545,7 @@ int assembler_in_pseudopc(Assembler *as) {
     return as->in_pseudopc;
 }
 
-uint16_t assembler_get_real_pc(Assembler *as) {
+uint32_t assembler_get_real_pc(Assembler *as) {
     return as->in_pseudopc ? as->real_pc : as->pc;
 }
 

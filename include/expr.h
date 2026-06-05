@@ -71,6 +71,8 @@ typedef struct {
     int32_t value;          /* Evaluated value */
     int defined;            /* 1 if all symbols were defined */
     int is_zeropage;        /* 1 if value is known to fit in zero page */
+    int error;              /* 1 if evaluation failed */
+    const char *error_msg;  /* Static error message if error is set */
 } ExprResult;
 
 /* Expression parser context */
@@ -168,14 +170,14 @@ const char *expr_parser_error(ExprParser *parser);
  * On pass 1, undefined symbols result in defined=0 but no error.
  * On pass 2, undefined symbols are an error.
  */
-ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint16_t pc, int pass, const char *current_zone);
+ExprResult expr_eval(Expr *expr, SymbolTable *symbols, AnonLabels *anon, uint32_t pc, int pass, const char *current_zone);
 
 /*
  * Evaluate an expression and return just the value.
  * Returns 0 if any symbols are undefined.
  * Use expr_eval() if you need to know about undefined symbols.
  */
-int32_t expr_eval_value(Expr *expr, SymbolTable *symbols, uint16_t pc);
+int32_t expr_eval_value(Expr *expr, SymbolTable *symbols, uint32_t pc);
 
 /*
  * Check if an expression contains any symbol references.

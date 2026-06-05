@@ -100,18 +100,32 @@ char *file_read(const char *filename, size_t *out_size) {
     FILE *f = fopen(filename, "rb");
     if (!f) return NULL;
 
-    fseek(f, 0, SEEK_END);
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
     long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
     if (size < 0) {
+        fclose(f);
+        return NULL;
+    }
+    if (fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
         return NULL;
     }
 
     char *buf = mem_alloc((size_t)size + 1);
-    size_t read = fread(buf, 1, (size_t)size, f);
-    fclose(f);
+    size_t expected = (size_t)size;
+    size_t read = fread(buf, 1, expected, f);
+    if (read != expected || ferror(f)) {
+        free(buf);
+        fclose(f);
+        return NULL;
+    }
+    if (fclose(f) != 0) {
+        free(buf);
+        return NULL;
+    }
 
     buf[read] = '\0';
     if (out_size) *out_size = read;

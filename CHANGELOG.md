@@ -2,6 +2,34 @@
 
 All notable changes to ASM64 are documented in this file.
 
+## [1.0.2] 2026-06-05
+
+### Behavior Changes
+- Expression evaluation now fails assembly for division or modulo by zero, invalid shift counts, signed 32-bit overflow, and `INT32_MIN / -1` style arithmetic traps.
+- Program counter tracking no longer wraps silently past `$FFFF`; assemblies that cross the 64K address space now report an error.
+- Directive names are case-insensitive. Unknown directives are now source errors instead of warnings.
+- `!if` conditions must be defined when evaluated. Forward-referenced conditions no longer silently assemble as false.
+- `!cpu 6502` and `!cpu 65c02` reject illegal/undocumented opcodes. The default `6510` mode still accepts them.
+
+### Bug Fixes
+- Fixed anonymous forward labels so multiple references to the same `+` label resolve correctly, including mixed `+` and `++` references.
+- Fixed pass-2 diagnostics from includes, macros, and loops so they report the stored source filename and line.
+- Fixed parser token ownership for directive string arguments and lexer/parser expression errors.
+- Reset macros, macro expansion state, loop state, and CPU mode when reusing an `Assembler`.
+- Hardened source, binary include, listing, symbol, and output file I/O against seek, tell, read, write, close, and partial-transfer failures.
+- Added allocation checks around macro definition and expansion paths before partially built structures can be used.
+
+### Performance
+- Added opcode lookup tables for mnemonic/addressing-mode lookup and opcode-byte lookup.
+- Changed `!binary` pass 1 to validate the file span and advance the PC without reading and emitting the file contents.
+- Removed listing source capture's repeated source-buffer rescan in favor of direct current-line slicing.
+
+### Tests
+- Added regression coverage for CPU opcode restrictions, anonymous forward labels, expression errors, include diagnostics, directive casing, unknown directives, forward-referenced `!if`, PC overflow, and assembler reuse.
+- Verified with the normal test suite and an AddressSanitizer/UndefinedBehaviorSanitizer build.
+
+---
+
 ## [1.0.1] - 2026-04-14
 
 ### Bug Fixes
@@ -82,7 +110,7 @@ ASM64 is a portable 6502/6510 cross-assembler designed for Commodore 64 developm
 - Arithmetic: `+`, `-`, `*`, `/`, `%`
 - Bitwise: `&`, `|`, `^`, `~`, `<<`, `>>`
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
-- Logical: `&&`, `||`, `!`
+- Logical: `!`
 - Address operators: `<` (low byte), `>` (high byte)
 
 #### Output Options
@@ -107,5 +135,6 @@ ASM64 is a portable 6502/6510 cross-assembler designed for Commodore 64 developm
 
 | Version | Date | Description |
 |---------|------|-------------|
+| Unreleased | TBD | Audit remediation, stricter diagnostics, robustness, performance |
 | 1.0.1 | 2026-04-14 | Bug fixes, memory safety, performance |
 | 1.0.0 | 2026-02-02 | Initial release |

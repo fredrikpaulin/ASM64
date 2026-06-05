@@ -70,7 +70,7 @@ typedef struct {
     StatementType type;
     int line;               /* Source line number */
     int column;             /* Source column */
-    const char *file;       /* Source filename */
+    char *file;             /* Source filename (allocated) */
 
     LabelInfo *label;       /* Label on this line (or NULL) */
 
@@ -90,7 +90,7 @@ typedef struct {
     Token current;          /* Current token */
     Token previous;         /* Previous token */
     SymbolTable *symbols;   /* Symbol table for lookups */
-    uint16_t pc;            /* Current program counter */
+    uint32_t pc;            /* Current program counter */
     int pass;               /* Assembly pass (1 or 2) */
     const char *error;      /* Last error message */
 } Parser;
@@ -105,7 +105,7 @@ void parser_init(Parser *parser, Lexer *lexer, SymbolTable *symbols);
 /*
  * Set current program counter (for * references).
  */
-void parser_set_pc(Parser *parser, uint16_t pc);
+void parser_set_pc(Parser *parser, uint32_t pc);
 
 /*
  * Set assembly pass (1 or 2).

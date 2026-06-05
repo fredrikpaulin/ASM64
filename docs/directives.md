@@ -2,6 +2,8 @@
 
 This document provides a complete reference for all directives supported by ASM64.
 
+Directive names are case-insensitive: `!byte`, `!BYTE`, and `!Byte` are the same directive. Unknown directives are assembly errors.
+
 ## Data Definition Directives
 
 ### !byte / !by / !b
@@ -78,6 +80,8 @@ Alternative syntax for setting program counter.
 !org $1000
 ```
 
+Program counter values must stay in the 64K address space (`$0000-$FFFF`). If emitted or reserved data would cross `$FFFF`, assembly fails instead of wrapping to `$0000`.
+
 ### !skip
 Reserve bytes without initializing them.
 
@@ -131,6 +135,8 @@ Conditional assembly based on expression.
 !endif
 ```
 
+The condition must be fully defined when the `!if` is evaluated. Use `!ifdef` or `!ifndef` for forward-tolerant symbol existence checks.
+
 ### !ifdef / !ifndef
 Conditional assembly based on symbol definition.
 
@@ -179,8 +185,10 @@ Include a binary file.
 ```asm
 !binary "data.bin"              ; Include entire file
 !binary "data.bin", length      ; Include first N bytes
-!binary "data.bin", length, offset  ; Include with offset
+!binary "data.bin", length, offset  ; Include N bytes starting at offset
 ```
+
+The binary span is validated during pass 1. Out-of-range offsets or spans are assembly errors.
 
 ## Pseudo-PC Directives
 
@@ -207,9 +215,9 @@ End pseudo-PC mode and return to real addresses.
 Select the target CPU type.
 
 ```asm
-!cpu 6502            ; Standard 6502
+!cpu 6502            ; Standard 6502, illegal opcodes rejected
 !cpu 6510            ; 6510 with illegal opcodes (default)
-!cpu "65c02"         ; 65C02 extended instructions
+!cpu "65c02"         ; 65C02 mode, illegal opcodes rejected
 ```
 
 ## Diagnostic Directives
@@ -294,6 +302,6 @@ Expressions can be used in most directive arguments:
 | `>` | Greater than |
 | `<=` | Less or equal |
 | `>=` | Greater or equal |
-| `&&` | Logical AND |
-| `\|\|` | Logical OR |
 | `!` | Logical NOT |
+
+Expression errors fail assembly. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and undefined `!if` conditions are reported instead of being silently folded to zero.

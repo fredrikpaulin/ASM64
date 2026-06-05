@@ -125,6 +125,8 @@ WHITE       = 1
         lda #'A'        ; Character: 65
 ```
 
+Decimal literals must fit in signed 32-bit range. Hexadecimal and binary literals may use up to 32 bits and are converted explicitly to the assembler's signed 32-bit expression value.
+
 ## Expressions
 
 Expressions can be used anywhere a numeric value is expected.
@@ -151,6 +153,10 @@ Expressions can be used anywhere a numeric value is expected.
 ### Special Values
 
 - `*` - Current program counter
+
+Expression evaluation is checked. Division or modulo by zero, invalid shift counts, signed 32-bit arithmetic overflow, and a program counter value outside expression range are errors.
+
+`!if` conditions must be defined when evaluated. A forward-referenced symbol in `!if` is an error; use `!ifdef` or `!ifndef` when the test is about symbol existence.
 
 ### Examples
 
@@ -200,6 +206,8 @@ zp_var = $80
 
 **Important:** Define zero-page labels before use to ensure optimization.
 
+The program counter is limited to `$0000-$FFFF`. If emitted, skipped, filled, aligned, or included data would cross `$FFFF`, ASM64 reports an error instead of wrapping around.
+
 ## Strings
 
 ### Encoding Types
@@ -247,3 +255,5 @@ label:  lda #0      ; End of line comment
 - **Directives:** Case insensitive (`!BYTE`, `!byte`, `!Byte`)
 - **Labels:** Case sensitive (`Label` and `label` are different)
 - **Registers:** Case insensitive (`A`, `a`, `X`, `x`, `Y`, `y`)
+
+Unknown directives are errors. This is deliberate: ignored source is usually worse than rejected source.
